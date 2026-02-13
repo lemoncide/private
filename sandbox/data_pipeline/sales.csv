@@ -1,0 +1,6 @@
+product,category,amount,region
+    Apple,Fruit, 100 ,North
+    Banana,Fruit, 50 ,South
+    Carrot,Veg, 30 ,North
+    Apple,Fruit, 120 ,South
+    

@@ -8,3 +8,10 @@ pyyaml
 openai
 sentence-transformers
 simpleeval
+instructor
+jsonpath-ng
+ipykernel
+notebook
+mcp
+pytest
+pytest-cov

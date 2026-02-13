@@ -6,11 +6,12 @@ from agent.tools.manager import ToolManager
 from agent.memory.manager import MemoryManager
 
 def build_graph():
-    # Initialize dependencies
+    """
+    Builds the LangGraph StateGraph for the agent.
+    """
+    # Initialize Dependencies
     llm_client = LLMClient()
-    # Note: ToolManager might need updates to handle LangChain tools internally, 
-    # but for now we pass it as is.
-    tool_manager = ToolManager() 
+    tool_manager = ToolManager()
     memory_manager = MemoryManager()
     
     nodes = AgentNodes(llm_client, tool_manager, memory_manager)
@@ -19,44 +20,70 @@ def build_graph():
     workflow = StateGraph(AgentState)
     
     # Add Nodes
-    workflow.add_node("plan", nodes.plan_node)
-    workflow.add_node("execute", nodes.execute_node)
+    workflow.add_node("planner", nodes.plan_node)
+    workflow.add_node("executor", nodes.execute_node)
+    workflow.add_node("repair", nodes.repair_node)
     workflow.add_node("reflect", nodes.reflect_node)
     
-    # Set Entry Point
-    workflow.set_entry_point("plan")
-    
     # Add Edges
-    workflow.add_edge("plan", "execute")
-    workflow.add_edge("execute", "reflect")
     
-    # Conditional Edge from Reflect
-    def should_continue(state: AgentState):
-        if state.get("response"):
-            return "end"
-        
-        # Check if replan happened (current_step_index reset to 0 and we are not at start)
-        # Or simply check if we need to loop back to plan or execute
-        # Based on Reflect Node logic:
-        # - Retry: index same -> Execute
-        # - Replan: index 0 -> Execute (Plan updated in state)
-        # - Next: index + 1 -> Execute
-        
-        # Wait, if we Replan, we might want to go to Execute directly with new plan?
-        # Or go to Plan node to regenerate?
-        # Our Reflect node logic updates 'plan' directly if action is 'replan'.
-        # So we can just go to Execute.
-        
+    # 1. Start -> Planner
+    workflow.set_entry_point("planner")
+    
+    # 2. Planner -> Executor (if success) or End (if failed)
+    def check_plan_status(state: AgentState):
+        if state.status == "failed":
+            return "end" # Planning failed
         return "continue"
-    
+        
     workflow.add_conditional_edges(
-        "reflect",
-        should_continue,
+        "planner",
+        check_plan_status,
         {
-            "continue": "execute",
+            "continue": "executor",
             "end": END
         }
     )
+    
+    # 3. Executor -> (Repair, Reflect/End, Loop)
+    def check_execution_status(state: AgentState):
+        if state.status == "failed":
+            return "repair"
+        elif state.status == "completed":
+            return "reflect"
+        elif state.status == "running":
+            return "loop"
+        else:
+            return "reflect" # Default
+            
+    workflow.add_conditional_edges(
+        "executor",
+        check_execution_status,
+        {
+            "repair": "repair",
+            "reflect": "reflect",
+            "loop": "executor"
+        }
+    )
+    
+    # 4. Repair -> (Executor, End)
+    def check_repair_status(state: AgentState):
+        if state.status == "executing": # Repaired and ready to retry
+            return "retry"
+        else: # Repair failed
+            return "fail"
+            
+    workflow.add_conditional_edges(
+        "repair",
+        check_repair_status,
+        {
+            "retry": "executor",
+            "fail": "reflect" # Go to reflect to report failure
+        }
+    )
+    
+    # 5. Reflect -> End
+    workflow.add_edge("reflect", END)
     
     # Compile
     app = workflow.compile()

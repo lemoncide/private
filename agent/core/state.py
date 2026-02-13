@@ -1,11 +1,29 @@
-from typing import List, Dict, Any, Optional, TypedDict, Annotated
-import operator
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
+from agent.core.schema import Plan, ExecutionResult
 
-class AgentState(TypedDict):
-    input: str
-    plan: List[str]
-    current_step_index: int
-    past_steps: Annotated[List[Dict[str, str]], operator.add]
-    response: Optional[str]
-    scratchpad: Dict[str, Any]
-    summary: Optional[str] # For memory compression
+class AgentState(BaseModel):
+    """
+    Unified Agent State (Pydantic Model).
+    Shared state across the LangGraph execution flow.
+    """
+    input: str = Field(description="The original user objective or query")
+    
+    plan: Optional[Plan] = Field(default=None, description="The current execution plan")
+    
+    current_step_index: int = Field(default=0, description="Index of the current step in the plan")
+    
+    past_steps: List[ExecutionResult] = Field(default_factory=list, description="History of executed steps and their results")
+    
+    context_variables: Dict[str, Any] = Field(default_factory=dict, description="Shared execution context variables (replacing raw ExecutionContext)")
+    
+    response: Optional[str] = Field(default=None, description="Final response to the user")
+    
+    status: str = Field(default="pending", description="Current agent status: pending, planning, executing, completed, failed, repaired, repair_failed")
+    
+    error: Optional[str] = Field(default=None, description="Current error message if any")
+    
+    scratchpad: List[Dict[str, Any]] = Field(default_factory=list, description="Intermediate reasoning or notes")
+
+    class Config:
+        arbitrary_types_allowed = True

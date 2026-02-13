@@ -1,0 +1,3 @@
+# README for modelcontextprotocol/servers
+
+This is mock content.

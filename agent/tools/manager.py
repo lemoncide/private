@@ -14,22 +14,42 @@ class ToolManager:
         self.mcp_adapter = MCPAdapter()
         self.skill_loader = SkillLoader(os.path.join(os.getcwd(), 'skills'))
         self.memory_manager = memory_manager
+        self.auto_mappings: Dict[str, Dict[str, str]] = {}
         self._initialize_tools()
 
     def _initialize_tools(self):
         # 1. Load MCP Tools
         mcp_servers = config.get("mcp.servers", {})
-        for name, url in mcp_servers.items():
-            self.mcp_adapter.connect_server(name, url)
+        for name, cfg in mcp_servers.items():
+            if isinstance(cfg, dict):
+                 # New config format: { "command": "...", "args": [...] }
+                 command = cfg.get("command")
+                 args = cfg.get("args", [])
+                 env = cfg.get("env", {})
+                 if command:
+                     self.mcp_adapter.connect_server(name, command, args, env)
+            else:
+                 # Legacy URL string format - ignoring for Stdio adapter
+                 logger.warning(f"Skipping MCP server {name}: URL configuration not supported by Stdio adapter.")
         
         for tool in self.mcp_adapter.list_tools():
+            # Apply Namespace for MCP tools
+            if hasattr(tool, 'server_name'):
+                 original_name = tool.name
+                 # Format: mcp:server_name:tool_name
+                 namespaced_name = f"mcp:{tool.server_name}:{original_name}"
+                 tool.name = namespaced_name
             self.register_tool(tool)
 
-        # 2. Load Skills
-        for tool in self.skill_loader.load_skills():
+        # 2. Load Skills with Auto-Mapping
+        skills, mappings = self.skill_loader.load_skills()
+        self.auto_mappings = mappings
+        
+        for tool in skills:
             self.register_tool(tool)
             
         logger.info(f"Total tools loaded: {len(self.tools)}")
+        logger.info(f"Auto-mappings generated for: {list(self.auto_mappings.keys())}")
 
     def register_tool(self, tool: BaseTool):
         self.tools[tool.name] = tool
@@ -66,20 +86,19 @@ class ToolManager:
     def execute_tool(self, name: str, **kwargs):
         tool = self.get_tool(name)
         if tool:
+            logger.debug(f"Executing tool {name} (type: {type(tool)}) with args: {kwargs}")
             try:
-                # LangChain tool support
-                if hasattr(tool, "run"):
-                    # For StructuredTool or BaseTool, .run expects tool_input or **kwargs
-                    # If it's a StructuredTool from function, it might expect specific args
-                    # Let's try passing kwargs directly
-                    return tool.run(tool_input=kwargs)
-                elif hasattr(tool, "run"): # Fallback for old style if any
-                     return tool.run(**kwargs)
+                # Always call run with kwargs unpacked.
+                # Our BaseTool is Pydantic, so it expects keywords or defined fields.
+                # If run() is defined as run(self, **kwargs), it works.
+                # If run() is defined as run(self, expression: str), unpacking works.
+                return tool.run(**kwargs)
             except Exception as e:
-                # Try passing as dictionary if kwargs failed or try positional
-                try:
-                    return tool.run(kwargs)
-                except:
-                    logger.error(f"Error executing tool {name}: {e}")
-                    return f"Error: {str(e)}"
+                logger.error(f"Error executing tool {name}: {e}")
+                logger.error(f"Tool run method: {getattr(tool, 'run', 'missing')}")
+                # Don't try fallback with tool.run(kwargs) as that passes a dict as 1st pos arg,
+                # which causes "BaseModel.__init__ takes 1 pos arg but 2 given" if 'run' somehow calls super init
+                # or if the tool implementation is confused.
+                # Just raise the original error to let Executor/Adaptation handle it.
+                raise e
         return f"Tool {name} not found."

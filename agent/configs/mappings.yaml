@@ -1,0 +1,51 @@
+# agent/config/mappings.yaml
+# 语义操作类型 → 具体工具 → 参数映射
+# 格式：semantic_param: tool_param
+
+operation_to_tool_mappings:
+  # ============================
+  # Data Operations
+  # ============================
+  compute:
+    calculator:
+      expression: expression
+
+  # ============================
+  # Interaction Operations
+  # ============================
+  search:
+    local_web_search:
+      query: query
+      
+  read:
+    read_file:
+      file_path: path
+      
+  write:
+    write_file:
+      file_path: path
+      content: content
+      
+  # ============================
+  # Logic/Transform Operations
+  # ============================
+  transform:
+    count_words:
+      text: text
+    summarize_text:
+      text: text
+      max_length: max_length
+
+  # ============================
+  # MCP Operations
+  # ============================
+  git_clone:
+    mcp:MockGitServer:git_clone:
+      repo_url: repo_url
+      target_dir: target_dir
+      
+  read:
+    mcp:MockGitServer:read_file:
+      file_path: path
+    mcp:filesystem:read_file:
+      file_path: path

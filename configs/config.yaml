@@ -5,4 +5,17 @@ llm:
 
 mcp:
   servers:
-    filesystem: "http://localhost:8000/mcp"
+    official_filesystem:
+      command: "npx.cmd"
+      args: 
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "E:\\study\\M2\\Agent\\sandbox" # Restrict to sandbox for safety
+
+    official_github:
+      command: "npx.cmd"
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-github"
+      env:
+        GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}" # Injected from env var

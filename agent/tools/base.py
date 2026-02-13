@@ -1,17 +1,21 @@
-from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from pydantic import BaseModel
 
-class BaseTool(ABC):
-    def __init__(self, name: str, description: str):
-        self.name = name
-        self.description = description
+class BaseTool(BaseModel):
+    name: str
+    description: str
+    args_schema: Optional[Dict[str, Any]] = None
+    
+    model_config = {'arbitrary_types_allowed': True}
 
-    @abstractmethod
     def run(self, **kwargs) -> Any:
-        pass
+        raise NotImplementedError("Tool must implement run method")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "name": self.name,
             "description": self.description
         }
+        if self.args_schema:
+            data["args_schema"] = self.args_schema
+        return data

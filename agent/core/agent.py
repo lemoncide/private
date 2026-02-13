@@ -1,42 +1,67 @@
-from agent.core.planner import Planner
-from agent.core.reactor import ReActEngine
+from typing import Dict, Any, Optional
+from agent.core.graph import build_graph
 from agent.core.state import AgentState
-from agent.memory.manager import MemoryManager
-from agent.tools.manager import ToolManager
-from agent.llm.client import LLMClient
 from agent.utils.logger import logger
 
-class Agent:
+class LangGraphAgent:
+    """
+    Main Agent class powered by LangGraph.
+    """
     def __init__(self):
-        self.llm = LLMClient()
-        self.tools = ToolManager()
-        self.memory = MemoryManager()
-        self.planner = Planner(self.llm)
-        self.reactor = ReActEngine(self.llm, self.tools)
-        logger.info("Agent initialized successfully")
+        logger.info("Initializing LangGraph Agent...")
+        self.app = build_graph()
+        logger.info("Agent Graph compiled successfully.")
 
-    def run(self, objective: str):
-        logger.info(f"Agent started with objective: {objective}")
+    def invoke(self, query: str) -> Dict[str, Any]:
+        """
+        Run the agent synchronously.
+        """
+        logger.info(f"Invoking Agent with query: {query}")
         
-        # 1. Initialize State
-        state = AgentState(input_query=objective)
+        # Initialize State
+        initial_state = AgentState(input=query)
         
-        # 2. Plan
-        plan = self.planner.plan(objective)
-        state.plan = plan
-        
-        # 3. Save to Memory
-        self.memory.add_memory(f"Objective: {objective}", {"type": "goal"})
-        self.memory.add_memory(f"Plan: {plan}", {"type": "plan"})
-
-        # 4. Execute Loop
-        results = []
-        while state.get_current_step():
-            step_result = self.reactor.execute_step(state)
-            results.append(step_result)
-            state.next_step()
+        # Execute Graph
+        try:
+            # LangGraph's invoke expects a dict or state object. 
+            # Since we used Pydantic, we can pass the model or dict.
+            # Passing dict is safer for compatibility.
+            result_state = self.app.invoke(initial_state.model_dump())
             
-        final_result = "\n".join(results)
-        self.memory.add_memory(f"Result: {final_result}", {"type": "result"})
+            # Result is a dict (state snapshot)
+            response = result_state.get("response")
+            error = result_state.get("error")
+            status = result_state.get("status")
+            
+            if error:
+                return {"response": f"Error: {error}", "status": status, "trace": result_state}
+            
+            return {"response": response, "status": status, "trace": result_state}
+            
+        except Exception as e:
+            logger.error(f"Agent execution failed: {e}")
+            return {"response": f"System Error: {str(e)}", "status": "system_error"}
+
+    async def ainvoke(self, query: str) -> Dict[str, Any]:
+        """
+        Run the agent asynchronously.
+        """
+        logger.info(f"Async Invoking Agent with query: {query}")
         
-        return final_result
+        initial_state = AgentState(input=query)
+        
+        try:
+            result_state = await self.app.ainvoke(initial_state.model_dump())
+            
+            response = result_state.get("response")
+            error = result_state.get("error")
+            status = result_state.get("status")
+            
+            if error:
+                return {"response": f"Error: {error}", "status": status, "trace": result_state}
+            
+            return {"response": response, "status": status, "trace": result_state}
+            
+        except Exception as e:
+            logger.error(f"Agent execution failed: {e}")
+            return {"response": f"System Error: {str(e)}", "status": "system_error"}
