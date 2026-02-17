@@ -1,41 +1,27 @@
-import re
-import json
 import logging
-import asyncio
-from typing import List, Dict, Any, Type, TypeVar
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Type, TypeVar
+
 from openai import OpenAI
-from agent.core.schema import Plan, PlanStep, VariableRef, VariableBinding, OperationType, OperationSpec
-from agent.llm.cot_parser import extract_thinking, parse_structured, CoTParseError
+from pydantic import BaseModel
+
+from agent.core.schema import Plan, PlanStep
+from agent.llm.cot_parser import CoTParseError, extract_thinking, parse_structured
+from agent.llm.client import LLMClient
+from agent.llm.url import normalize_base_url
 from agent.utils.config import config
 
 logger = logging.getLogger("Agent")
 
 T = TypeVar("T", bound=BaseModel)
 
-# ============= Stage 1 Schema =============
-class SkeletonStep(BaseModel):
-    step_id: str
-    intent: str
-    required_capability: str
-    description: str
 
-class PlanSkeleton(BaseModel):
-    goal: str = "" # Optional or derived
-    steps: List[SkeletonStep]
-
-# ============= Planner =============
 class Planner:
     def __init__(self):
-        # Initialize standard OpenAI client
         api_key = config.get("llm.api_key", "lm-studio")
-        base_url = config.get("llm.api_base", "http://127.0.0.1:1234/v1")
-        
-        self.client = OpenAI(
-            base_url=base_url,
-            api_key=api_key
-        )
+        base_url = normalize_base_url(config.get("llm.api_base", "http://127.0.0.1:1234/v1"))
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = config.get("llm.model", "gpt-3.5-turbo")
+        self.llm = LLMClient()
 
     def _parse_json(self, text: str, model_class: Type[T]) -> T:
         thinking = extract_thinking(text or "")
@@ -61,337 +47,182 @@ class Planner:
         return parsed
 
     def plan(self, objective: str, tools: List[Dict[str, Any]]) -> Plan:
-        """
-        Two-Stage Planning Strategy:
-        1. Skeleton Generation: Identify high-level steps and required capabilities.
-        2. Detail Generation: Fill in variable bindings, operations, and fallbacks.
-        """
         logger.info(f"Planning for objective: {objective}")
-        
         try:
-            # Stage 1: Generate Skeleton
-            skeleton = self._generate_skeleton(objective, tools)
-            logger.info(f"Generated skeleton with {len(skeleton.steps)} steps")
-            
-            # Stage 2: Generate Full Plan
-            plan = self._generate_details(objective, tools, skeleton)
-            logger.info(f"Generated full plan with {len(plan.steps)} steps")
-            
-            return plan
-            
+            tool_plan = self._generate_tool_call_plan(objective, tools)
+            if tool_plan:
+                return tool_plan
+            plan = self._generate_plan(objective, tools)
+            return self._fix_final_output(plan)
         except Exception as e:
             logger.error(f"Planning failed: {e}")
-            # Fallback to a simple single-step plan if LLM fails completely
-            return self._create_fallback_plan(objective)
+            return self._create_fallback_plan(objective, tools)
 
-    def _generate_skeleton(self, objective: str, tools: List[Dict[str, Any]]) -> PlanSkeleton:
-        """Stage 1: High-level steps"""
-        # Improved tool description injection - COMPACT MODE
-        # To avoid context window overflow, we only include name and description for skeleton generation
-        tool_descriptions = []
+    @staticmethod
+    def _plan_from_tool_call(objective: str, tool_call: Dict[str, Any]) -> Plan:
+        tool_name = tool_call.get("name")
+        tool_args = tool_call.get("arguments")
+
+        if not tool_name or not isinstance(tool_name, str):
+            raise ValueError("Tool call missing 'name'")
+        if tool_args is None:
+            tool_args = {}
+        if not isinstance(tool_args, dict):
+            raise ValueError("Tool call 'arguments' must be an object")
+
+        step = PlanStep(
+            step_id="step_1",
+            intent=objective,
+            required_capability=tool_name,
+            tool_args=tool_args,
+            output_var="step_1_output",
+            depends_on=[],
+            fallback_strategy="fail",
+        )
+        return Plan(goal=objective, steps=[step], final_output="step_1_output", metadata={"planner_mode": "tool_call"})
+
+    def _generate_tool_call_plan(self, objective: str, tools: List[Dict[str, Any]]) -> Plan | None:
+        if not tools:
+            return None
+
+        system_prompt = """
+你是一个工具路由器。你必须从提供的工具清单中选择一个最合适的工具，并给出该工具调用所需的参数。
+要求：
+- 只能选择一个工具调用
+- 参数必须与该工具的参数 schema 匹配
+- 不要输出自然语言解释
+""".strip()
+
+        result = self.llm.generate_with_tools(
+            objective,
+            tool_defs=tools,
+            system_prompt=system_prompt,
+            tool_choice="auto",
+            temperature=0.0,
+        )
+
+        if result.get("error"):
+            return None
+
+        tool_calls = result.get("tool_calls") or []
+        if not tool_calls:
+            return None
+
+        return self._plan_from_tool_call(objective, tool_calls[0])
+
+    def _generate_plan(self, objective: str, tools: List[Dict[str, Any]]) -> Plan:
+        tool_lines: List[str] = []
         for t in tools:
-            # Truncate description heavily
-            desc = t['description'][:60] + "..." if len(t['description']) > 60 else t['description']
-            tool_descriptions.append(f"- {t['name']}: {desc}")
-        
-        tool_desc_str = "\n".join(tool_descriptions)
-        
+            name = t.get("name", "")
+            args_schema = t.get("args_schema") or {}
+            props = args_schema.get("properties") if isinstance(args_schema, dict) else None
+            if isinstance(props, dict) and props:
+                params = ", ".join(sorted(props.keys()))
+                tool_lines.append(f"- {name}: {params}")
+            else:
+                tool_lines.append(f"- {name}")
+        tool_list = "\n".join(tool_lines)
+
         system_prompt = f"""
-        You are an expert planner. Break down the user's objective into high-level steps.
-        
-        Available Tools:
-        {tool_desc_str}
-        
-        For each step, identify:
-        1. A unique step_id (e.g., step_1)
-        2. The intent (what to achieve)
-        3. The required capability (MUST be an EXACT tool name from Available Tools)
-        4. A brief description
+你是一个任务规划器。根据用户目标和可用工具列表，生成一个执行计划。
 
-        TOOL SELECTION RULES (CRITICAL):
-        - required_capability MUST exactly match one of the tool names listed in Available Tools.
-        - Do NOT output generic labels like "search", "read", "write", "reasoning".
-        - Do NOT invent tools. If no tool fits, choose "llm_reasoning".
-        
-        RESPONSE FORMAT:
-        You MUST provide a <thinking> block BEFORE the JSON.
-        Format:
-        <thinking>
-        1. Identify the minimum necessary steps.
-        2. Validate dependencies between steps.
-        </thinking>
-        ```json
-        {{ ... }}
-        ```
+可用工具（每行一个，格式：工具名: 参数列表）：
+{tool_list}
 
-        CRITICAL: The JSON must match this schema:
-        {{
-            "steps": [
-                {{
-                    "step_id": "string",
-                    "intent": "string",
-                    "required_capability": "string",
-                    "description": "string"
-                }}
-            ]
-        }}
-        
-        Keep the plan concise and logical.
-        """
-        
+输出格式要求：
+- required_capability 必须是上方工具列表中的完整工具名，不能自造
+- tool_args 中引用上一步结果用 "$上一步的output_var"，引用用户输入用 "$input"
+- 其他值直接写字面量
+- final_output 必须等于最后一步的 output_var
+
+输出（先写 <thinking> 再写 JSON；JSON 不要使用 markdown code block）：
+{{
+  "goal": "...",
+  "steps": [
+    {{
+      "step_id": "step_1",
+      "intent": "...",
+      "required_capability": "完整工具名",
+      "tool_args": {{"参数名": "值或$变量"}},
+      "output_var": "step_1_output",
+      "depends_on": [],
+      "fallback_strategy": "fail"
+    }}
+  ],
+  "final_output": "最后一步的output_var",
+  "metadata": {{}}
+}}
+""".strip()
+
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Objective: {objective}"}
+                {"role": "user", "content": f"Objective: {objective}"},
             ],
-            temperature=0.0
+            temperature=0.0,
+            timeout=600.0,
         )
-        
-        return self._parse_json(response.choices[0].message.content, PlanSkeleton)
-
-    def _generate_details(self, objective: str, tools: List[Dict[str, Any]], skeleton: PlanSkeleton) -> Plan:
-        """Stage 2: Detailed bindings and configurations"""
-        # Improved tool description injection - ULTRA COMPACT MODE
-        # SIMPLIFIED: Trust the pre-filtered tool list from nodes.py
-        # No need for complex logic here, just inject what we have.
-            
-        tool_descriptions = []
-        for t in tools:
-            # Inject all tools passed to this function
-            desc = f"- {t['name']}"
-            if 'args_schema' in t:
-                 props = t['args_schema'].get('properties', {})
-                 args_list = list(props.keys())
-                 desc += f" (Inputs: {', '.join(args_list)})"
-            tool_descriptions.append(desc)
-            
-        tool_desc_str = "\n".join(tool_descriptions)
-        skeleton_json = skeleton.model_dump_json(indent=2)
-        
-        # NOTE: For official MCP tools, path arguments must be ABSOLUTE paths or valid URIs.
-        # Ensure the LLM understands this requirement for filesystem operations.
-        
-        system_prompt = f"""
-        You are an expert autonomous agent planner.
-        Your goal is to convert the provided Plan Skeleton into a robust, executable Plan.
-        
-        Available Tools (Refer to these for exact parameter names):
-        {tool_desc_str}
-        
-        Plan Skeleton:
-        {skeleton_json}
-        
-        CRITICAL RULES:
-        1. Maintain the steps from the skeleton.
-        2. For each step, define the 'operation' with 'type' and 'inputs'.
-        2.5. required_capability MUST be an EXACT tool name from Available Tools. Do NOT use generic capabilities.
-        2.6. operation.type MUST be one of: compute, transform, extract, search, read, write, call_api, condition, aggregate, reason, generate.
-        2.7. certainty MUST be either: certain, uncertain. (Do NOT use high/medium/low.)
-        2.8. fallback_strategy MUST be one of: fail, ask_llm, skip. (Do NOT use none.)
-        3. Use 'VariableRef' for inputs to trace data flow:
-           - source='input' for initial user inputs
-           - source='step_output' for results from previous steps (name=step_id)
-           - source='literal' for hardcoded values. THIS IS MANDATORY for values explicitly stated in the user's objective (numbers, paths, query strings).
-             * Example (Math): "Calculate 50 * 3" -> inputs: {{ "expression": {{ "value_ref": {{"source": "literal", "name": "50 * 3"}} }} }}
-             * Example (File): "Read from data/report.txt" -> inputs: {{ "file_path": {{ "value_ref": {{"source": "literal", "name": "data/report.txt"}} }} }}
-             * Example (Search): "Search for 'LLM agents'" -> inputs: {{ "query": {{ "value_ref": {{"source": "literal", "name": "LLM agents"}} }} }}
-        4. Define 'output_var' for each step.
-        5. Mark 'certainty' as 'uncertain' if the step relies on external data that might be messy.
-        6. Set 'fallback_strategy' to 'ask_llm' for uncertain steps.
-        
-        STRICT TYPE CHECKING:
-        - Do not pass a string to a tool expecting an integer/float. 
-        - If a tool needs a number (e.g. calculator), extract the numeric value.
-        - If a tool needs a JSON string, ensure it is properly formatted.
-        
-        TOOL PARAMETER AWARENESS:
-        - For 'calculator', use 'expression' (e.g., "50 * 3"). Do NOT split into 'a' and 'b'.
-        - For 'local_web_search', use 'query'.
-        - For 'read_file' / 'write_file', use 'file_path' (and 'content' for write).
-        - For MCP tools, strictly follow the parameter names listed in "Available Tools".
-
-        TOOL CHOICE QUALITY:
-        - Prefer direct, structured tools over indirect detours (e.g., avoid using a general web search when a dedicated tool can query the target system directly).
-        - Do not pass large blobs of text into path/file parameters. If you need a path or identifier, add a step to extract/derive it explicitly.
-        
-        PATH HANDLING:
-        - When dealing with files, always use the FULL ABSOLUTE PATH provided in the objective if available.
-        - Do not truncate or modify file paths unless explicitly asked.
-        
-        DEPENDENCY VALIDATION:
-        - Ensure every 'step_output' source refers to a step_id that actually exists in previous steps.
-        - Do not reference future steps.
-        - The 'final_output' field MUST be the exact 'output_var' name of the last step, NOT a description.
-        - NEVER set 'final_output' to a filename like 'github_summary.txt'. That filename belongs in a write step input, not final_output.
-        - If the last step writes a file, set that step's output_var to something like 'write_result' and set final_output to 'write_result'.
-
-        PLAN OUTPUT MUST MATCH THIS SHAPE (CRITICAL):
-        ```json
-        {{
-          "goal": "string",
-          "steps": [
-            {{
-              "step_id": "step_1",
-              "intent": "string",
-              "operation": {{
-                "type": "search",
-                "description": "optional string",
-                "inputs": {{
-                  "query": {{ "value_ref": {{ "source": "literal", "name": "..." }} }}
-                }},
-                "config": {{}}
-              }},
-              "output_var": "string",
-              "depends_on": [],
-              "required_capability": "EXACT_TOOL_NAME_FROM_AVAILABLE_TOOLS",
-              "constraints": {{}},
-              "certainty": "certain",
-              "fallback_strategy": "fail"
-            }}
-          ],
-          "initial_inputs": {{}},
-          "final_output": "string",
-          "metadata": {{}}
-        }}
-        ```
-        IMPORTANT: operation.type is a SEMANTIC ENUM (search/read/write/...). required_capability is the CONCRETE TOOL NAME.
-        
-        LITERAL EXTRACTION RULES (MANDATORY):
-        - You MUST extract specific values (numbers, strings, filenames) from the user's objective.
-        - Set 'source' to 'literal'.
-        - Set 'name' to the exact value (e.g. "50", "iPhone 16", "data.txt").
-        
-        RESPONSE FORMAT:
-        You MUST provide a <thinking> block BEFORE the JSON.
-        Format:
-        <thinking>
-        1. Analyze tool requirements...
-        2. Check if resources exist... (e.g., do I need to clone before reading?)
-        3. Verify input types...
-        </thinking>
-        ```json
-        {{
-          "steps": [...]
-        }}
-        ```
-        """
-        
-        try:
-            last_error = None
-            for _attempt in range(3):
-                try:
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"Objective: {objective}"},
-                        ],
-                        timeout=600.0,
-                    )
-                    plan = self._parse_json(response.choices[0].message.content, Plan)
-                    return self._fix_final_output(plan)
-                except Exception as e:
-                    last_error = e
-            raise last_error
-            
-        except Exception as e:
-            logger.error(f"Plan generation failed or timed out: {e}")
-            raise e
+        return self._parse_json(response.choices[0].message.content, Plan)
 
     def _fix_final_output(self, plan: Plan) -> Plan:
         if not plan or not plan.steps:
             return plan
 
-        available_vars = set((plan.initial_inputs or {}).keys())
-        step_outputs = [s.output_var for s in plan.steps if s.output_var]
-        if plan.final_output in step_outputs or plan.final_output in available_vars:
-            return plan
-
-        candidates = [s for s in plan.steps if s.output_var]
-        if not candidates:
-            return plan
-
-        last_step = candidates[-1]
-        plan.final_output = last_step.output_var
+        last_output = plan.steps[-1].output_var
+        if plan.final_output != last_output:
+            try:
+                plan = plan.model_copy(update={"final_output": last_output})
+            except Exception:
+                plan.final_output = last_output
         return plan
 
-    def _create_fallback_plan(self, objective: str) -> Plan:
-        return Plan(
-            goal=objective,
-            steps=[
-                PlanStep(
-                    step_id="step_1",
-                    intent="Execute task via LLM reasoning",
-                    operation=OperationSpec(
-                        type=OperationType.REASON,
-                        description="Reasoning fallback",
-                        inputs={
-                            "task_description": VariableBinding(
-                                value_ref=VariableRef(source="literal", name=objective)
-                            )
-                        }
-                    ),
-                    output_var="final_result",
-                    required_capability="reasoning",
-                    certainty="uncertain",
-                    fallback_strategy="ask_llm"
-                )
-            ],
-            final_output="final_result"
+    def _create_fallback_plan(self, objective: str, tools: List[Dict[str, Any]]) -> Plan:
+        available_names = [t.get("name") for t in tools if t.get("name")]
+        preferred = "llm_reasoning" if "llm_reasoning" in set(available_names) else (available_names[0] if available_names else "llm_reasoning")
+        step = PlanStep(
+            step_id="step_1",
+            intent="Fallback: summarize objective",
+            required_capability=preferred,
+            tool_args={"task_description": "$input"} if preferred == "llm_reasoning" else {},
+            output_var="final_result",
+            depends_on=[],
+            fallback_strategy="fail",
         )
+        return Plan(goal=objective, steps=[step], final_output="final_result", metadata={"fallback": True})
 
-    def refine_plan(self, objective: str, original_plan: Plan, error_msg: str) -> Plan:
-        """
-        Refine the plan based on validation errors.
-        """
-        logger.info(f"Refining plan due to error: {error_msg}")
-        
-        system_prompt = (
-            "You are an expert PlanDebugger. Your goal is to fix a broken execution plan.\n"
-            "The previous plan failed validation. Do NOT just blindly retry or fill in empty strings.\n\n"
-            
-            "--- ERROR DIAGNOSIS STRATEGY ---\n"
-            "1. IF error is 'Field required' or 'Input is empty' or 'Literal input ... is empty':\n"
-            "   - CAUSE: You are likely trying to use a resource (file, variable, id) that hasn't been created yet.\n"
-            "   - FIX: You MUST insert a NEW STEP before the failing step to create/fetch that resource.\n"
-            "   - EXAMPLE: If 'path' is empty for 'read_file', did you forget to 'git_clone' or 'search_files' first?\n"
-            "   - EXAMPLE: If 'repo_id' is empty, did you forget to 'search_repositories' first?\n\n"
-            
-            "2. IF error is 'Invalid format':\n"
-            "   - CAUSE: The tool expects a specific string format (e.g., JSON, date).\n"
-            "   - FIX: Check the tool definition strictly.\n\n"
-            
-            "--- TASK ---\n"
-            "Review the Objective, the Failed Plan, and the Error.\n"
-            "Generate a CORRECTED plan that solves the logical dependency issues.\n"
-            "Output a <thinking> block followed by a valid JSON object matching the Plan schema.\n"
-            "CRITICAL CONSTRAINTS:\n"
-            "- Your JSON MUST include: goal, steps, final_output.\n"
-            "- Each step MUST include: step_id, intent, operation{type,inputs}, output_var, required_capability, certainty, fallback_strategy.\n"
-            "- operation.type MUST be one of: compute, transform, extract, search, read, write, call_api, condition, aggregate, reason, generate.\n"
-            "- required_capability MUST be an EXACT tool name from the provided tool list. Do NOT output generic capabilities.\n"
-            "- certainty MUST be either: certain, uncertain.\n"
-            "- fallback_strategy MUST be one of: fail, ask_llm, skip.\n"
-        )
-        
+    def refine_plan(self, objective: str, original_plan: Plan, error_msg: str, tools: List[Dict[str, Any]]) -> Plan:
+        tool_names = [t.get("name") for t in tools if t.get("name")]
+        tool_lines = "\n".join(f"- {name}" for name in tool_names)
+
+        system_prompt = f"""
+你是一个 PlanDebugger。上一次生成的计划未通过校验，请修复它。
+
+可用工具（required_capability 必须从这里选择）：
+{tool_lines}
+
+修复规则：
+- 只输出一个完整的新计划 JSON（先 <thinking> 再 JSON）
+- steps 中每个 step 必须包含：step_id, intent, required_capability, tool_args, output_var, depends_on, fallback_strategy
+- tool_args 中的 "$变量" 只能引用 "$input" 或者前序 step 的 output_var
+- final_output 必须等于最后一步的 output_var
+""".strip()
+
         user_content = f"""
-        Objective: {objective}
-        
-        Failed Plan (JSON):
-        {original_plan.model_dump_json(indent=2)}
-        
-        Validation Error:
-        {error_msg}
-        """
-        
+Objective: {objective}
+
+Failed Plan (JSON):
+{original_plan.model_dump_json(indent=2)}
+
+Validation Error:
+{error_msg}
+""".strip()
+
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ]
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            temperature=0.0,
+            timeout=600.0,
         )
-        
         plan = self._parse_json(response.choices[0].message.content, Plan)
         return self._fix_final_output(plan)

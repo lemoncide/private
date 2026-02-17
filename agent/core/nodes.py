@@ -126,7 +126,7 @@ class AgentNodes:
                     # Retry with refinement
                     logger.info(f"Retrying plan generation (attempt {attempt+1})")
                     if current_plan and last_error:
-                         current_plan = self.planner.refine_plan(objective, current_plan, last_error)
+                         current_plan = self.planner.refine_plan(objective, current_plan, last_error, tool_defs)
                     else:
                          current_plan = self.planner.plan(objective, tool_defs)
                     

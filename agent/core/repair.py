@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from typing import List, Optional, Dict, Any
-from .schema import Plan, PlanStep, ExecutionResult, ExecutionContext, VariableRef, VariableBinding, OperationSpec
+from .schema import Plan, PlanStep, ExecutionResult, ExecutionContext
 from agent.tools.manager import ToolManager
 from agent.llm.client import LLMClient
 from pydantic import BaseModel, Field
@@ -10,6 +12,7 @@ from agent.utils.logger import logger
 from agent.utils.config import config
 from openai import OpenAI
 from agent.llm.cot_parser import extract_thinking, parse_structured
+from agent.llm.url import normalize_base_url
 
 class ExecutionRepairer:
     """运行时修复器 - 修复工具调用错误"""
@@ -18,7 +21,7 @@ class ExecutionRepairer:
         
         # Initialize LLM for Adaptation
         api_key = config.get("llm.api_key", "lm-studio")
-        base_url = config.get("llm.api_base", "http://127.0.0.1:1234/v1")
+        base_url = normalize_base_url(config.get("llm.api_base", "http://127.0.0.1:1234/v1"))
         self.client = OpenAI(
             base_url=base_url,
             api_key=api_key
@@ -167,7 +170,7 @@ class PlanRepairer:
         context: ExecutionContext,
         remaining_plan: List[PlanStep]
     ) -> Optional[Plan]:
-        """尝试修复失败的步骤 (Async)"""
+        return None
 
         error_type = execution_result.error_type
         print(f"--- Repairing Step {failed_step.step_id} (Error: {error_type}) ---")
@@ -352,7 +355,7 @@ class PlanRepairer:
             
             # Temporary: Create a local instructor client for repair if self.llm is sync
             api_key = config.get("llm.api_key", "lm-studio")
-            base_url = config.get("llm.api_base", "http://127.0.0.1:1234/v1")
+            base_url = normalize_base_url(config.get("llm.api_base", "http://127.0.0.1:1234/v1"))
             client = instructor.patch(OpenAI(
                 base_url=base_url,
                 api_key=api_key
