@@ -6,7 +6,7 @@ def count_words(text: str) -> int:
         return 0
     return len(text.split())
 
-def summarize_text(text: str, max_length: int = 100) -> str:
+def summarize_text(text: str = "", max_length: int = 100) -> str:
     """
     Summarize text by truncating or extracting key sentences.
     (Currently a simple truncation/keyword placeholder, can be enhanced with LLM later)

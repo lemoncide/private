@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from openai import OpenAI
 from pydantic import BaseModel
@@ -16,12 +16,12 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class Planner:
-    def __init__(self):
+    def __init__(self, llm_client: Optional[LLMClient] = None):
         api_key = config.get("llm.api_key", "lm-studio")
         base_url = normalize_base_url(config.get("llm.api_base", "http://127.0.0.1:1234/v1"))
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = config.get("llm.model", "gpt-3.5-turbo")
-        self.llm = LLMClient()
+        self.llm = llm_client or LLMClient()
 
     def _parse_json(self, text: str, model_class: Type[T]) -> T:
         thinking = extract_thinking(text or "")
@@ -49,7 +49,11 @@ class Planner:
     def plan(self, objective: str, tools: List[Dict[str, Any]]) -> Plan:
         logger.info(f"Planning for objective: {objective}")
         try:
-            tool_plan = self._generate_tool_call_plan(objective, tools)
+            tool_plan = None
+            try:
+                tool_plan = self._generate_tool_call_plan(objective, tools)
+            except Exception:
+                tool_plan = None
             if tool_plan:
                 return tool_plan
             plan = self._generate_plan(objective, tools)

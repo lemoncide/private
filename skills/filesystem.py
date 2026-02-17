@@ -33,7 +33,7 @@ def read_file(path: str) -> str:
     with open(full_path, "r", encoding="utf-8") as f:
         return f.read()
 
-def write_file(path: str, content: str, mode: Literal["write", "append"] = "write") -> str:
+def write_file(path: str = "github_summary.txt", content: str = "", mode: Literal["write", "append"] = "write") -> str:
     """Write content to a file within the sandbox."""
     full_path = _validate_path(path)
     

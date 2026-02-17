@@ -17,7 +17,7 @@ class AgentNodes:
         self.tools = tool_manager
         self.memory = memory_manager
         
-        self.planner = Planner()
+        self.planner = Planner(llm_client)
         self.executor = ToolExecutor(tool_manager)
         self.repairer = PlanRepairer(llm_client, tool_manager)
         self.validator = PlanValidator()

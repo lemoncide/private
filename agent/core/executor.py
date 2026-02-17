@@ -1,5 +1,7 @@
 from typing import Any, Dict
 
+from openai import OpenAI
+
 from agent.core.schema import ExecutionContext, ExecutionResult, PlanStep
 from agent.tools.manager import ToolManager
 from agent.utils.logger import logger
