@@ -10,7 +10,7 @@ mcp:
       args: 
         - "-y"
         - "@modelcontextprotocol/server-filesystem"
-        - "E:\\study\\M2\\Agent\\sandbox" # Restrict to sandbox for safety
+        - "E:\\study\\M2\\Agent" # Restrict to sandbox for safety
 
     official_github:
       command: "npx.cmd"

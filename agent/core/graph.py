@@ -22,7 +22,6 @@ def build_graph():
     # Add Nodes
     workflow.add_node("planner", nodes.plan_node)
     workflow.add_node("executor", nodes.execute_node)
-    workflow.add_node("repair", nodes.repair_node)
     workflow.add_node("reflect", nodes.reflect_node)
     
     # Add Edges
@@ -33,7 +32,7 @@ def build_graph():
     # 2. Planner -> Executor (if success) or End (if failed)
     def check_plan_status(state: AgentState):
         if state.status == "failed":
-            return "end" # Planning failed
+            return "reflect"
         return "continue"
         
     workflow.add_conditional_edges(
@@ -41,15 +40,13 @@ def build_graph():
         check_plan_status,
         {
             "continue": "executor",
-            "end": END
+            "reflect": "reflect"
         }
     )
     
-    # 3. Executor -> (Repair, Reflect/End, Loop)
+    # 3. Executor -> (Reflect/End, Loop)
     def check_execution_status(state: AgentState):
-        if state.status == "failed":
-            return "repair"
-        elif state.status == "completed":
+        if state.status == "completed":
             return "reflect"
         elif state.status == "running":
             return "loop"
@@ -60,25 +57,8 @@ def build_graph():
         "executor",
         check_execution_status,
         {
-            "repair": "repair",
             "reflect": "reflect",
             "loop": "executor"
-        }
-    )
-    
-    # 4. Repair -> (Executor, End)
-    def check_repair_status(state: AgentState):
-        if state.status == "executing": # Repaired and ready to retry
-            return "retry"
-        else: # Repair failed
-            return "fail"
-            
-    workflow.add_conditional_edges(
-        "repair",
-        check_repair_status,
-        {
-            "retry": "executor",
-            "fail": "reflect" # Go to reflect to report failure
         }
     )
     

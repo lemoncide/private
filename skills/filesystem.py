@@ -9,20 +9,17 @@ def _get_sandbox_path() -> str:
     return sandbox_dir
 
 def _validate_path(path: str) -> str:
-    """Validate and resolve path to ensure it's within sandbox."""
+    """Force all file operations into sandbox directory."""
     sandbox_dir = _get_sandbox_path()
-    
-    # Handle absolute paths: must start with sandbox_dir
-    # Handle relative paths: join with sandbox_dir
-    if os.path.isabs(path):
-        resolved_path = os.path.normpath(path)
-    else:
-        resolved_path = os.path.normpath(os.path.join(sandbox_dir, path))
-    
-    if not resolved_path.startswith(sandbox_dir):
-        raise ValueError(f"Access denied: Path '{path}' is outside sandbox directory.")
-    
+
+    # 只取文件名，忽略用户给的目录
+    filename = os.path.basename(path)
+
+    # 强制写入 sandbox
+    resolved_path = os.path.normpath(os.path.join(sandbox_dir, filename))
+
     return resolved_path
+
 
 def read_file(path: str) -> str:
     """Read content from a file within the sandbox."""

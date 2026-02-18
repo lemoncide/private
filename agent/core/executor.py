@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from openai import OpenAI
+OpenAI = None
 
 from agent.core.schema import ExecutionContext, ExecutionResult, PlanStep
 from agent.tools.manager import ToolManager
