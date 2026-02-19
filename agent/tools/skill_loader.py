@@ -2,7 +2,7 @@ import os
 import importlib.util
 import inspect
 from typing import List, Any, Callable, get_type_hints, Dict, Tuple
-from agent.tools.base import BaseTool as AgentBaseTool
+from langchain_core.tools import BaseTool
 from pydantic import create_model, BaseModel, Field
 import traceback
 
@@ -10,7 +10,7 @@ class SkillLoader:
     def __init__(self, skills_dir: str):
         self.skills_dir = skills_dir
 
-    def load_skills(self) -> Tuple[List[AgentBaseTool], Dict[str, Dict[str, str]]]:
+    def load_skills(self) -> Tuple[List[BaseTool], Dict[str, Dict[str, str]]]:
         tools = []
         auto_mappings = {}
         
@@ -31,7 +31,7 @@ class SkillLoader:
                     if hasattr(module, "get_tools"):
                         module_tools = module.get_tools()
                         for t in module_tools:
-                            if isinstance(t, AgentBaseTool):
+                            if isinstance(t, BaseTool):
                                 tools.append(t)
                                 self._generate_mappings_for_tool(t, auto_mappings)
                     
@@ -54,7 +54,7 @@ class SkillLoader:
         
         return tools, auto_mappings
 
-    def _generate_mappings_for_tool(self, tool: AgentBaseTool, mappings: Dict[str, Dict[str, str]]):
+    def _generate_mappings_for_tool(self, tool: BaseTool, mappings: Dict[str, Dict[str, str]]):
         """Generate automatic parameter mappings for a tool."""
         # Common semantic aliases
         semantic_aliases = {
@@ -66,8 +66,17 @@ class SkillLoader:
         }
         
         tool_mappings = {}
-        schema = tool.args_schema.schema()
-        properties = schema.get("properties", {})
+        args_schema = getattr(tool, "args_schema", None)
+        schema: Dict[str, Any] = {}
+        if args_schema is None:
+            return
+        if isinstance(args_schema, dict):
+            schema = args_schema
+        elif hasattr(args_schema, "schema"):
+            schema = args_schema.schema()
+        elif hasattr(args_schema, "model_json_schema"):
+            schema = args_schema.model_json_schema()
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
         
         for param_name in properties.keys():
             # Check if param matches any semantic alias group
@@ -81,7 +90,7 @@ class SkillLoader:
         if tool_mappings:
             mappings[tool.name] = tool_mappings
 
-    def _create_tool_from_func(self, func: Callable) -> AgentBaseTool:
+    def _create_tool_from_func(self, func: Callable) -> BaseTool:
         """Dynamically create a Tool class from a function."""
         tool_name = func.__name__
         tool_description = func.__doc__ or "No description available."
@@ -105,13 +114,12 @@ class SkillLoader:
         
         # Create dynamic tool class
         # Use a factory function to capture closure variables correctly
-        class DynamicTool(AgentBaseTool):
+        class DynamicTool(BaseTool):
             name: str = tool_name
             description: str = tool_description
             args_schema: type[BaseModel] = ArgsSchema
             
-            def run(self, **kwargs):
+            def _run(self, **kwargs):
                 return func(**kwargs)
                 
         return DynamicTool()
-

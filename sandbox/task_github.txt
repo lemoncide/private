@@ -1,5 +1,0 @@
-1. Search for a GitHub repository named 'modelcontextprotocol/servers'.
-2. List the files in the repository to find a Python file.
-3. Read the content of 'README.md' from that repository.
-4. Summarize the README content.
-5. Save the summary to 'github_summary.txt' in the sandbox.

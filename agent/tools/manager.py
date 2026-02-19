@@ -1,6 +1,5 @@
-from typing import List, Dict, Optional
-from agent.tools.base import BaseTool
-from agent.tools.mcp_adapter import MCPAdapter
+from typing import List, Dict, Optional, Any
+from langchain_core.tools import BaseTool
 from agent.tools.skill_loader import SkillLoader
 from agent.utils.config import config
 from agent.utils.logger import logger
@@ -8,40 +7,23 @@ import os
 
 from agent.memory.manager import MemoryManager
 
+try:
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+except Exception:
+    MultiServerMCPClient = None
+
 class ToolManager:
     def __init__(self, memory_manager: MemoryManager = None):
         self.tools: Dict[str, BaseTool] = {}
-        self.mcp_adapter = MCPAdapter()
         self.skill_loader = SkillLoader(os.path.join(os.getcwd(), 'skills'))
         self.memory_manager = memory_manager
         self.auto_mappings: Dict[str, Dict[str, str]] = {}
+        self._mcp_tools_initialized = False
+        self._mcp_client = None
         self._initialize_tools()
 
     def _initialize_tools(self):
-        # 1. Load MCP Tools
-        mcp_servers = config.get("mcp.servers", {})
-        for name, cfg in mcp_servers.items():
-            if isinstance(cfg, dict):
-                 # New config format: { "command": "...", "args": [...] }
-                 command = cfg.get("command")
-                 args = cfg.get("args", [])
-                 env = cfg.get("env", {})
-                 if command:
-                     self.mcp_adapter.connect_server(name, command, args, env)
-            else:
-                 # Legacy URL string format - ignoring for Stdio adapter
-                 logger.warning(f"Skipping MCP server {name}: URL configuration not supported by Stdio adapter.")
-        
-        for tool in self.mcp_adapter.list_tools():
-            # Apply Namespace for MCP tools
-            if hasattr(tool, 'server_name'):
-                 original_name = tool.name
-                 # Format: mcp:server_name:tool_name
-                 namespaced_name = f"mcp:{tool.server_name}:{original_name}"
-                 tool.name = namespaced_name
-            self.register_tool(tool)
-
-        # 2. Load Skills with Auto-Mapping
+        # 1. Load Skills with Auto-Mapping
         skills, mappings = self.skill_loader.load_skills()
         self.auto_mappings = mappings
         
@@ -50,6 +32,57 @@ class ToolManager:
             
         logger.info(f"Total tools loaded: {len(self.tools)}")
         logger.info(f"Auto-mappings generated for: {list(self.auto_mappings.keys())}")
+
+    async def init_mcp_tools(self):
+        if self._mcp_tools_initialized:
+            return
+        if MultiServerMCPClient is None:
+            logger.warning("langchain-mcp-adapters not installed; skipping MCP tool initialization.")
+            return
+
+        connections = self.get_mcp_connections()
+
+        if not connections:
+            self._mcp_tools_initialized = True
+            return
+
+        client = MultiServerMCPClient(connections, tool_name_prefix=True)
+        tools = await client.get_tools()
+        self._mcp_client = client
+
+        for tool in tools:
+            name = getattr(tool, "name", "") or ""
+            matched_server = None
+            matched_prefix_len = -1
+            for server_name in connections.keys():
+                prefix = f"{server_name}_"
+                if name.startswith(prefix) and len(prefix) > matched_prefix_len:
+                    matched_server = server_name
+                    matched_prefix_len = len(prefix)
+            if matched_server:
+                tool_name = name[matched_prefix_len:]
+                tool.name = f"mcp:{matched_server}:{tool_name}"
+            self.register_tool(tool)
+
+        self._mcp_tools_initialized = True
+        logger.info(f"MCP tools loaded: {len(tools)}")
+
+    def get_mcp_connections(self) -> Dict[str, Dict[str, Any]]:
+        connections: Dict[str, Dict[str, Any]] = {}
+        mcp_servers = config.get("mcp.servers", {}) or {}
+        for server_name, cfg in mcp_servers.items():
+            if not isinstance(cfg, dict):
+                continue
+            command = cfg.get("command")
+            if not command:
+                continue
+            args = cfg.get("args", []) or []
+            conn: Dict[str, Any] = {"transport": "stdio", "command": command, "args": args}
+            env = cfg.get("env") or {}
+            if isinstance(env, dict) and env:
+                conn["env"] = env
+            connections[server_name] = conn
+        return connections
 
     def register_tool(self, tool: BaseTool):
         self.tools[tool.name] = tool
@@ -71,16 +104,18 @@ class ToolManager:
         else:
             tools_to_return = list(self.tools.values())
 
-        # Support LangChain Tools
         result = []
         for t in tools_to_return:
-            if hasattr(t, "to_dict"):
-                result.append(t.to_dict())
-            else:
-                result.append({
-                    "name": t.name,
-                    "description": t.description
-                })
+            item: Dict[str, Any] = {"name": getattr(t, "name", ""), "description": getattr(t, "description", "")}
+            args_schema = getattr(t, "args_schema", None)
+            if args_schema is not None:
+                if isinstance(args_schema, dict):
+                    item["args_schema"] = args_schema
+                elif hasattr(args_schema, "schema"):
+                    item["args_schema"] = args_schema.schema()
+                elif hasattr(args_schema, "model_json_schema"):
+                    item["args_schema"] = args_schema.model_json_schema()
+            result.append(item)
         return result
 
     async def execute_tool(self, name: str, **kwargs):
@@ -88,7 +123,7 @@ class ToolManager:
         if tool:
             logger.debug(f"Executing tool {name} (type: {type(tool)}) with args: {kwargs}")
             try:
-                return await tool.arun(**kwargs)
+                return await tool.ainvoke(kwargs)
             except Exception as e:
                 logger.error(f"Error executing tool {name}: {e}")
                 logger.error(f"Tool run method: {getattr(tool, 'run', 'missing')}")

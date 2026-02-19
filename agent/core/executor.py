@@ -26,6 +26,20 @@ class ToolExecutor:
                 resolved[key] = val
         return resolved
 
+    def _normalize_result_data(self, result_data: Any) -> Any:
+        if isinstance(result_data, list):
+            text_parts = []
+            has_text_block = False
+            for item in result_data:
+                if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                    has_text_block = True
+                    text_parts.append(item["text"])
+                else:
+                    return result_data
+            if has_text_block:
+                return "".join(text_parts)
+        return result_data
+
     async def execute_step(self, step: PlanStep, context: ExecutionContext) -> ExecutionResult:
         logger.info(f"Executing Step {step.step_id}: {step.intent}")
 
@@ -50,11 +64,12 @@ class ToolExecutor:
                         continue
                     raise
 
-            context.set(step.output_var, result_data)
+            normalized = self._normalize_result_data(result_data)
+            context.set(step.output_var, normalized)
             return ExecutionResult(
                 step_id=step.step_id,
                 status="success",
-                result=result_data,
+                result=normalized,
                 meta={"tool": step.required_capability, "args": resolved_args, "attempts": attempts_used},
             )
         except Exception as e:

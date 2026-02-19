@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import asyncio
+from contextlib import AsyncExitStack
 
 # Ensure the current directory is in the path
 sys.path.append(os.getcwd())
@@ -25,19 +26,29 @@ async def run_task(task: str):
         "repair_attempts": 0,
     }
 
-    mcp_adapter = getattr(tool_manager, "mcp_adapter", None) if tool_manager else None
+    async with AsyncExitStack() as stack:
+        try:
+            from langchain_mcp_adapters.client import MultiServerMCPClient
+            from langchain_mcp_adapters.tools import load_mcp_tools
+        except Exception:
+            MultiServerMCPClient = None
+            load_mcp_tools = None
 
-    try:
-        if mcp_adapter and hasattr(mcp_adapter, "connect_all"):
-            await mcp_adapter.connect_all()
+        connections = tool_manager.get_mcp_connections() if hasattr(tool_manager, "get_mcp_connections") else {}
+        if MultiServerMCPClient and load_mcp_tools and connections:
+            client = MultiServerMCPClient(connections, tool_name_prefix=True)
+            for server_name in connections.keys():
+                session = await stack.enter_async_context(client.session(server_name))
+                tools = await load_mcp_tools(session, server_name=server_name, tool_name_prefix=True)
+                for tool in tools:
+                    name = getattr(tool, "name", "") or ""
+                    prefix = f"{server_name}_"
+                    tool_name = name[len(prefix):] if name.startswith(prefix) else name
+                    tool.name = f"mcp:{server_name}:{tool_name}"
+                    tool_manager.register_tool(tool)
+
         final_state = await app.ainvoke(initial_state)
         return final_state
-    finally:
-        if mcp_adapter and hasattr(mcp_adapter, "aclose"):
-            try:
-                await mcp_adapter.aclose()
-            except Exception:
-                pass
 
 
 def main():

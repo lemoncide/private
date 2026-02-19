@@ -75,6 +75,7 @@ class Planner:
 - final_output 必须等于最后一步的 output_var
 - 文件路径约束：当调用 read_file / write_file 时，path 必须使用 sandbox 内的相对路径（例如 "github_summary.txt" 或 "outputs/readme.md"），禁止使用绝对路径（例如 "E:\\tmp\\a.txt"）
 
+
 严格按照以下 JSON 格式输出，不要输出任何额外文字：
 {{
   "goal": "用一句话描述整体目标",
