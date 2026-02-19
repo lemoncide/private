@@ -17,6 +17,8 @@ class AgentState(BaseModel):
     
     context_variables: Dict[str, Any] = Field(default_factory=dict, description="Shared execution context variables (replacing raw ExecutionContext)")
     
+    repair_attempts: int = Field(default=0, description="Number of repair attempts for the current step")
+    
     response: Optional[str] = Field(default=None, description="Final response to the user")
     
     status: str = Field(default="pending", description="Current agent status: pending, planning, executing, completed, failed, repaired, repair_failed")

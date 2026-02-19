@@ -2,6 +2,7 @@ from typing import Dict, Any, List
 from agent.core.state import AgentState
 from agent.core.planner import Planner
 from agent.core.executor import ToolExecutor, ExecutionContext
+from agent.core.repair import Repairer
 from agent.core.schema import PlanStep, ExecutionResult
 from agent.core.reflect import Reflector
 from agent.core.tool_defs import prepare_tool_defs_with_report
@@ -18,6 +19,7 @@ class AgentNodes:
         
         self.planner = Planner(llm_client)
         self.executor = ToolExecutor(tool_manager)
+        self.repairer = Repairer(llm_client)
         self.reflector = Reflector(llm_client)
 
     def plan_node(self, state: AgentState) -> Dict[str, Any]:
@@ -43,6 +45,7 @@ class AgentNodes:
             "status": "executing",
             "context_variables": initial_context,
             "error": None,
+            "repair_attempts": 0,
         }
 
     async def execute_node(self, state: AgentState) -> Dict[str, Any]:
@@ -52,11 +55,18 @@ class AgentNodes:
         logger.info("--- Execute Node ---")
         
         if not state.plan or not state.plan.steps:
-            return {"status": "failed", "error": "No plan available"}
+            return {
+                "context_variables": state.context_variables,
+                "status": "failed",
+                "error": "No plan available",
+            }
             
         index = state.current_step_index
         if index >= len(state.plan.steps):
-            return {"status": "completed"}
+            return {
+                "context_variables": state.context_variables,
+                "status": "completed",
+            }
             
         current_step: PlanStep = state.plan.steps[index]
         
@@ -88,16 +98,81 @@ class AgentNodes:
                 "context_variables": context.variables, # Persist updated context
                 "current_step_index": next_index,
                 "status": status,
-                "error": None
+                "error": None,
+                "repair_attempts": 0,
             }
         else:
             # Execution failed
             logger.warning(f"Step {index} failed: {result.error}")
             return {
                 "past_steps": past_steps,
+                "context_variables": context.variables,
                 "status": "failed",
-                "error": result.error
+                "error": result.error,
+                "repair_attempts": state.repair_attempts,
             }
+
+    def repair_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("--- Repair Node ---")
+
+        if not state.plan or not state.plan.steps:
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "No plan available",
+                "repair_attempts": state.repair_attempts + 1,
+            }
+
+        index = state.current_step_index
+        if index >= len(state.plan.steps):
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "Invalid step index",
+                "repair_attempts": state.repair_attempts + 1,
+            }
+
+        failed_step: PlanStep = state.plan.steps[index]
+        last_error = state.error
+        if not last_error and state.past_steps:
+            last_error = state.past_steps[-1].error
+
+        tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input)
+        patched = self.repairer.repair_step(
+            objective=state.input,
+            failed_step=failed_step,
+            error=last_error or "",
+            context_variables=state.context_variables,
+            tool_defs=tool_defs,
+        )
+
+        attempts = state.repair_attempts + 1
+        if not patched:
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "Repair failed",
+                "repair_attempts": attempts,
+            }
+
+        new_step = failed_step.model_copy(
+            update={
+                "required_capability": patched.get("required_capability"),
+                "tool_args": patched.get("tool_args") or {},
+            }
+        )
+        new_steps = list(state.plan.steps)
+        new_steps[index] = new_step
+        new_plan = state.plan.model_copy(update={"steps": new_steps})
+
+        return {
+            "plan": new_plan,
+            "context_variables": state.context_variables,
+            "status": "executing",
+            "error": None,
+            "repair_attempts": attempts,
+            "current_step_index": index,
+        }
 
     def reflect_node(self, state: AgentState) -> Dict[str, Any]:
         """

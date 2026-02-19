@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
@@ -10,6 +11,9 @@ class BaseTool(BaseModel):
 
     def run(self, **kwargs) -> Any:
         raise NotImplementedError("Tool must implement run method")
+
+    async def arun(self, **kwargs) -> Any:
+        return await asyncio.to_thread(self.run, **kwargs)
 
     def to_dict(self) -> Dict[str, Any]:
         data = {

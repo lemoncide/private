@@ -9,6 +9,18 @@ class Reflector:
         self.llm = llm
 
     @staticmethod
+    def _safe_preview(value: Any, limit: int = 800) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            text = str(value)
+        except Exception:
+            return None
+        if len(text) > limit:
+            return text[:limit] + "..."
+        return text
+
+    @staticmethod
     def _extract_final_result(state: AgentState) -> Any:
         if not state.plan:
             return None
@@ -47,12 +59,54 @@ class Reflector:
                     "step_id": step_dict.get("step_id"),
                     "status": step_dict.get("status"),
                     "tool": meta.get("tool"),
+                    "tool_args": meta.get("args") if meta.get("args") is not None else meta.get("tool_args"),
                     "error_type": step_dict.get("error_type"),
                     "error": step_dict.get("error"),
                     "result_preview": result_preview,
                 }
             )
         return summary
+
+    def _format_steps_fallback(self, steps: List[Dict[str, Any]]) -> str:
+        if not steps:
+            return "无步骤执行记录。"
+        lines: List[str] = []
+        for i, s in enumerate(steps, start=1):
+            step_id = s.get("step_id")
+            status = s.get("status")
+            tool = s.get("tool")
+            tool_args = self._safe_preview(s.get("tool_args"))
+            error_type = s.get("error_type")
+            error = s.get("error")
+            result_preview = s.get("result_preview")
+            parts: List[str] = []
+            parts.append(f"{i}. step_id={step_id} status={status}")
+            if tool:
+                parts.append(f"tool={tool}")
+            if tool_args:
+                parts.append(f"args={tool_args}")
+            if error_type:
+                parts.append(f"error_type={error_type}")
+            if error:
+                parts.append(f"error={error}")
+            if result_preview:
+                parts.append(f"result_preview={result_preview}")
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _known_suggestions(error_text: str) -> List[str]:
+        text = (error_text or "").lower()
+        suggestions: List[str] = []
+        if "outside sandbox" in text:
+            suggestions.append("把写入/读取路径改为 sandbox 内相对路径，例如 \"readme_content.md\"。")
+        if "tool " in text and " not found" in text:
+            suggestions.append("检查 plan 里的 required_capability 是否与工具列表名称一致。")
+        if "mcp server not found" in text:
+            suggestions.append("检查 mcp.servers 配置与 server_name 是否匹配，并确认服务器已启动。")
+        if "变量 '" in (error_text or "") and "在 context 中不存在" in (error_text or ""):
+            suggestions.append("检查 tool_args 中的 \"$变量名\" 是否在 context_variables 里已存在，或先添加生成该变量的步骤。")
+        return suggestions
 
     def reflect(self, state: AgentState) -> str:
         objective = state.input or ""
@@ -79,12 +133,43 @@ class Reflector:
 
         text = self.llm.generate(user_prompt, system_prompt=system_prompt) or ""
         if text.startswith("Error generating response:"):
+            base_error = error
+            if not base_error and state.past_steps:
+                try:
+                    base_error = state.past_steps[-1].error
+                except Exception:
+                    base_error = error
+            report_lines: List[str] = []
             if status == "completed":
-                return f"任务已完成。\n最终结果：{final_result}"
+                report_lines.append("任务已完成。")
+                report_lines.append(f"最终结果：{final_result}")
+                if steps:
+                    report_lines.append("")
+                    report_lines.append("执行步骤：")
+                    report_lines.append(self._format_steps_fallback(steps))
+                return "\n".join(report_lines).strip()
             if status == "failed":
-                if error and "outside sandbox" in error.lower():
-                    return f"任务失败。\n错误：{error}\n建议：把写入路径改为 sandbox 内相对路径，例如 \"readme_content.md\"。"
-                return f"任务失败。\n错误：{error}"
-            return f"状态：{status}\n{error or ''}".strip()
+                report_lines.append("任务失败。")
+                if base_error:
+                    report_lines.append(f"错误：{base_error}")
+                if steps:
+                    report_lines.append("")
+                    report_lines.append("执行步骤：")
+                    report_lines.append(self._format_steps_fallback(steps))
+                suggestions = self._known_suggestions(base_error or "")
+                if suggestions:
+                    report_lines.append("")
+                    report_lines.append("建议：")
+                    for s in suggestions:
+                        report_lines.append(f"- {s}")
+                return "\n".join(report_lines).strip()
+            report_lines.append(f"状态：{status}")
+            if base_error:
+                report_lines.append(str(base_error))
+            if steps:
+                report_lines.append("")
+                report_lines.append("执行步骤：")
+                report_lines.append(self._format_steps_fallback(steps))
+            return "\n".join(report_lines).strip()
 
         return text.strip() or f"任务状态：{status}"

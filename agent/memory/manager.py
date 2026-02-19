@@ -31,10 +31,24 @@ class MemoryManager:
 
     def index_tool(self, tool_name: str, tool_description: str):
         """Index a tool for retrieval"""
+        description = tool_description or ""
+        upsert = getattr(self.tool_collection, "upsert", None)
+        if callable(upsert):
+            upsert(
+                documents=[description],
+                metadatas=[{"name": tool_name}],
+                ids=[tool_name],
+            )
+            return
+
+        try:
+            self.tool_collection.delete(ids=[tool_name])
+        except Exception:
+            pass
         self.tool_collection.add(
-            documents=[tool_description],
+            documents=[description],
             metadatas=[{"name": tool_name}],
-            ids=[tool_name]
+            ids=[tool_name],
         )
 
     def retrieve_tools(self, query: str, limit: int = 5) -> List[str]:

@@ -4,40 +4,35 @@ from agent.tools.manager import ToolManager
 
 
 def _prepare_tool_defs(tool_manager: ToolManager, objective: str, limit: int = 12) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    all_tools_raw = tool_manager.list_tools(limit=100)
-    objective_lower = (objective or "").lower()
+    all_tools_raw = tool_manager.list_tools(limit=500)
 
-    core_tools = ["read_file", "write_file", "local_web_search", "calculator", "llm_reasoning"]
-    keyword_map = {
-        "git": ["git", "github"],
-        "repo": ["git", "github"],
-        "code": ["search_code", "read"],
-        "csv": ["clean_data", "read_csv"],
-        "data": ["clean_data", "read_csv"],
-        "read": ["read"],
-        "write": ["write"],
-        "save": ["write"],
-    }
+    def is_mcp_tool(tool: Dict[str, Any]) -> bool:
+        name = str(tool.get("name", "") or "")
+        return name.lower().startswith("mcp:")
 
-    relevant_prefixes = set()
-    for keyword, prefixes in keyword_map.items():
-        if keyword in objective_lower:
-            relevant_prefixes.update(prefixes)
+    def is_local_skill_tool(tool: Dict[str, Any]) -> bool:
+        name = str(tool.get("name", "") or "")
+        return ":" not in name
 
-    filtered_tools: List[Dict[str, Any]] = []
+    always_keep: List[Dict[str, Any]] = []
     for t in all_tools_raw:
-        t_name = str(t.get("name", "")).lower()
-        if any(core in t_name for core in core_tools):
-            filtered_tools.append(t)
-            continue
-        if any(prefix in t_name for prefix in relevant_prefixes):
-            filtered_tools.append(t)
-            continue
+        if is_mcp_tool(t) or is_local_skill_tool(t):
+            always_keep.append(t)
+
+    retrieved: List[Dict[str, Any]] = []
+    if objective:
+        retrieved = tool_manager.list_tools(query=objective, limit=limit)
+
+    merged_by_name: Dict[str, Dict[str, Any]] = {}
+    for t in always_keep + retrieved:
+        name = t.get("name")
+        if name and name not in merged_by_name:
+            merged_by_name[name] = t
+
+    filtered_tools = list(merged_by_name.values())
 
     if len(filtered_tools) < 5:
-        filtered_tools = all_tools_raw[:10]
-
-    filtered_tools = filtered_tools[:limit]
+        filtered_tools = all_tools_raw[: max(10, limit)]
 
     enriched_tools: List[Dict[str, Any]] = []
     for t_dict in filtered_tools:

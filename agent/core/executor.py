@@ -1,9 +1,11 @@
+import asyncio
 from typing import Any, Dict
 
 OpenAI = None
 
 from agent.core.schema import ExecutionContext, ExecutionResult, PlanStep
 from agent.tools.manager import ToolManager
+from agent.utils.config import config
 from agent.utils.logger import logger
 
 
@@ -29,13 +31,31 @@ class ToolExecutor:
 
         try:
             resolved_args = self._resolve_tool_args(step, context)
-            result_data = self.tool_manager.execute_tool(step.required_capability, **resolved_args)
+            max_retries = int(config.get("executor.max_retries", 3) or 3)
+            if max_retries < 1:
+                max_retries = 1
+            retry_delay_seconds = float(config.get("executor.retry_delay_seconds", 0.5) or 0.5)
+            if retry_delay_seconds < 0:
+                retry_delay_seconds = 0.0
+
+            attempts_used = 0
+            for attempt in range(1, max_retries + 1):
+                try:
+                    result_data = await self.tool_manager.execute_tool(step.required_capability, **resolved_args)
+                    attempts_used = attempt
+                    break
+                except Exception as e:
+                    if attempt < max_retries and retry_delay_seconds > 0:
+                        await asyncio.sleep(retry_delay_seconds)
+                        continue
+                    raise
+
             context.set(step.output_var, result_data)
             return ExecutionResult(
                 step_id=step.step_id,
                 status="success",
                 result=result_data,
-                meta={"tool": step.required_capability, "args": resolved_args},
+                meta={"tool": step.required_capability, "args": resolved_args, "attempts": attempts_used},
             )
         except Exception as e:
             return ExecutionResult(

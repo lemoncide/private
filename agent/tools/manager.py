@@ -83,16 +83,12 @@ class ToolManager:
                 })
         return result
 
-    def execute_tool(self, name: str, **kwargs):
+    async def execute_tool(self, name: str, **kwargs):
         tool = self.get_tool(name)
         if tool:
             logger.debug(f"Executing tool {name} (type: {type(tool)}) with args: {kwargs}")
             try:
-                # Always call run with kwargs unpacked.
-                # Our BaseTool is Pydantic, so it expects keywords or defined fields.
-                # If run() is defined as run(self, **kwargs), it works.
-                # If run() is defined as run(self, expression: str), unpacking works.
-                return tool.run(**kwargs)
+                return await tool.arun(**kwargs)
             except Exception as e:
                 logger.error(f"Error executing tool {name}: {e}")
                 logger.error(f"Tool run method: {getattr(tool, 'run', 'missing')}")

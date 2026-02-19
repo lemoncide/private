@@ -33,13 +33,24 @@ class MCPTool(BaseTool):
         self._adapter = adapter
 
     def run(self, **kwargs):
-        return self._adapter.execute_tool(self.server_name, self.tool_name, kwargs)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.arun(**kwargs))
+        raise RuntimeError("MCPTool.run() cannot be used inside a running event loop; use await tool.arun(...)")
+
+    async def arun(self, **kwargs):
+        return await self._adapter.execute_tool(self.server_name, self.tool_name, kwargs)
 
 class MCPAdapter:
     def __init__(self):
         self.server_configs: Dict[str, StdioServerParameters] = {}
         self.max_retries = 3
         self.retry_delay = 1.0 # seconds
+        self._connections: Dict[str, Dict[str, Any]] = {}
+        self._connect_locks: Dict[str, asyncio.Lock] = {}
+        self._call_locks: Dict[str, asyncio.Lock] = {}
+        self._closed = False
         if not MCP_AVAILABLE:
             print("Warning: MCP package not installed. MCP features will be disabled.")
 
@@ -145,66 +156,120 @@ class MCPAdapter:
         
         raise last_error
 
-    def execute_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """
-        Execute a tool on a specific server.
-        Handles running inside an existing event loop or creating a new one.
-        """
+    async def execute_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
         config = self.server_configs.get(server_name)
         if not config:
             raise RuntimeError(f"MCP server not found: {server_name}")
             
         try:
-            # Check if we are already in an event loop
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                # We are in an async context (e.g., LangGraph ainvoke)
-                # But execute_tool is sync. We need to run this async logic.
-                # However, since we can't await here, and we can't use asyncio.run(),
-                # this is tricky. 
-                # Ideally execute_tool should be async, or ToolManager should handle it.
-                # BUT, BaseTool.run is sync.
-                # Solution: Use nest_asyncio OR run in a separate thread.
-                # For simplicity/stability, let's use a thread pool executor to run the async function synchronously.
-                from concurrent.futures import ThreadPoolExecutor
-                with ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, self._run_tool_with_retry(config, tool_name, arguments))
-                    return future.result()
-            else:
-                return asyncio.run(self._run_tool_with_retry(config, tool_name, arguments))
-
+            return await self._run_tool_with_retry(server_name, tool_name, arguments)
         except Exception as e:
             raise RuntimeError(f"Error executing MCP tool {server_name}:{tool_name}: {e}") from e
 
-    async def _run_tool_with_retry(self, config: StdioServerParameters, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        # Retry logic for execution
+    async def connect_all(self):
+        if not MCP_AVAILABLE:
+            return
+        tasks = [self._ensure_connected(name) for name in self.server_configs.keys()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def aclose(self):
+        self._closed = True
+        names = list(self._connections.keys())
+        for name in names:
+            try:
+                await self._close_server(name)
+            except Exception:
+                pass
+
+    async def _close_server(self, server_name: str):
+        conn = self._connections.pop(server_name, None)
+        if not conn:
+            return
+        session_cm = conn.get("session_cm")
+        client_cm = conn.get("client_cm")
+        if session_cm is not None:
+            try:
+                await session_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+        if client_cm is not None:
+            try:
+                await client_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    def _get_connect_lock(self, server_name: str) -> asyncio.Lock:
+        lock = self._connect_locks.get(server_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._connect_locks[server_name] = lock
+        return lock
+
+    def _get_call_lock(self, server_name: str) -> asyncio.Lock:
+        lock = self._call_locks.get(server_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._call_locks[server_name] = lock
+        return lock
+
+    async def _ensure_connected(self, server_name: str):
+        if self._closed:
+            raise RuntimeError("MCPAdapter is closed")
+        if server_name in self._connections:
+            return
+        config = self.server_configs.get(server_name)
+        if not config:
+            raise RuntimeError(f"MCP server not found: {server_name}")
+        lock = self._get_connect_lock(server_name)
+        async with lock:
+            if server_name in self._connections:
+                return
+            client_cm = stdio_client(config)
+            read, write = await client_cm.__aenter__()
+            session_cm = ClientSession(read, write)
+            session = await session_cm.__aenter__()
+            await session.initialize()
+            self._connections[server_name] = {
+                "client_cm": client_cm,
+                "session_cm": session_cm,
+                "session": session,
+            }
+
+    async def _call_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        await self._ensure_connected(server_name)
+        conn = self._connections.get(server_name)
+        if not conn:
+            raise RuntimeError(f"MCP server not connected: {server_name}")
+        session = conn.get("session")
+        if session is None:
+            raise RuntimeError(f"MCP session not available: {server_name}")
+        call_lock = self._get_call_lock(server_name)
+        async with call_lock:
+            return await session.call_tool(tool_name, arguments)
+
+    async def _run_tool_with_retry(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> Any:
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                async with stdio_client(config) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        result = await session.call_tool(tool_name, arguments)
-                        
-                        # Format result content
-                        output = []
-                        if hasattr(result, 'content'):
-                            for content in result.content:
-                                if content.type == 'text':
-                                    output.append(content.text)
-                                elif content.type == 'image':
-                                    output.append(f"[Image: {content.mimeType}]")
-                                elif content.type == 'resource':
-                                    output.append(f"[Resource: {content.uri}]")
-                        else:
-                             # Fallback if structure is different
-                             output.append(str(result))
-                        
-                        return "\n".join(output)
+                result = await self._call_tool(server_name, tool_name, arguments)
+                output = []
+                if hasattr(result, "content"):
+                    for content in result.content:
+                        if content.type == "text":
+                            output.append(content.text)
+                        elif content.type == "image":
+                            output.append(f"[Image: {content.mimeType}]")
+                        elif content.type == "resource":
+                            output.append(f"[Resource: {content.uri}]")
+                else:
+                    output.append(str(result))
+                return "\n".join(output)
             except Exception as e:
                 last_error = e
                 print(f"Execution attempt {attempt+1} failed for {tool_name}: {e}")
@@ -217,6 +282,10 @@ class MCPAdapter:
                 except Exception:
                     traceback.print_exc()
                 if attempt < self.max_retries - 1:
+                    try:
+                        await self._close_server(server_name)
+                    except Exception:
+                        pass
                     await asyncio.sleep(self.retry_delay * (2 ** attempt))
         
         raise last_error
