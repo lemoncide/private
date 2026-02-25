@@ -5,12 +5,14 @@ from typing import Dict, Any, List
 
 def read_csv_summary(file_path: str = None, content: str = None) -> str:
     """
-    Parses CSV content and returns a summary.
-    Summary includes: headers, row count, and basic stats for numeric columns.
-    
-    Args:
-        file_path: Optional path to the CSV file (used for reference or reading if content is missing).
-        content: The actual CSV string content. If None, tries to read from file_path.
+    解析 CSV 并返回结构化摘要（表头/行数/数值列统计）。
+
+    何时用：需要快速理解 CSV 内容结构，或对数值列做粗略统计。
+    输入：
+    - file_path：可选。若 content 为空时尝试从该路径读取（也支持误把 CSV 内容传到 file_path 的情况）。
+    - content：可选。CSV 文本内容；优先使用。
+    输出：可读的摘要文本（str），包含表头、行数、数值列 Avg/Min/Max。
+    典型任务：数据管道预检、分析报告的“数据概览”、调试 CSV 输入是否正确。
     """
     try:
         # If content is missing but file_path is provided, try to read from file
@@ -73,9 +75,12 @@ Statistics:
 
 def clean_data(content: str, column_to_clean: str, operation: str = "strip") -> str:
     """
-    Performs basic cleaning on a specific column in CSV content.
-    Operations: 'strip' (whitespace), 'upper', 'lower'.
-    Returns the new CSV content string.
+    对 CSV 指定列做基础清洗，并返回新的 CSV 文本。
+
+    何时用：需要对某一列统一大小写、去除空白等简单规范化处理。
+    输入：content（CSV 文本）、column_to_clean（列名）、operation（strip/upper/lower）。
+    输出：清洗后的 CSV 文本（str）。
+    典型任务：对关键字段做规范化、清洗后再交给下游统计/匹配步骤。
     """
     try:
         f = io.StringIO(content)

@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Agent 可视化前端</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: #f5f5f5;
+    }
+    header {
+      padding: 12px 16px;
+      background: #111827;
+      color: #f9fafb;
+      font-size: 16px;
+    }
+    .layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 300px 1.2fr 1fr;
+      gap: 8px;
+      padding: 8px;
+      overflow: hidden;
+    }
+    .panel {
+      background: #ffffff;
+      border-radius: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 8px 10px;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 13px;
+      font-weight: 600;
+      background: #f9fafb;
+    }
+    .panel-body {
+      padding: 8px 10px;
+      flex: 1;
+      overflow: auto;
+      font-size: 13px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      resize: vertical;
+      padding: 8px;
+      border-radius: 4px;
+      border: 1px solid #d1d5db;
+      font-size: 13px;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #4f46e5;
+      box-shadow: 0 0 0 1px rgba(79,70,229,0.4);
+    }
+    button {
+      margin-top: 8px;
+      padding: 6px 10px;
+      border-radius: 4px;
+      border: none;
+      background: #4f46e5;
+      color: #f9fafb;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #9ca3af;
+      cursor: default;
+    }
+    .hint {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .status-bar {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      margin-right: 4px;
+      display: inline-block;
+    }
+    .status-running {
+      background: #fbbf24;
+    }
+    .status-idle {
+      background: #9ca3af;
+    }
+    .steps-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .step-card {
+      border-radius: 4px;
+      border: 1px solid #e5e7eb;
+      padding: 6px 8px;
+      background: #f9fafb;
+    }
+    .step-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .step-title {
+      font-weight: 600;
+    }
+    .step-status {
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      color: #111827;
+    }
+    .step-status-success {
+      background: #bbf7d0;
+    }
+    .step-status-failed {
+      background: #fecaca;
+    }
+    .step-status-other {
+      background: #e5e7eb;
+    }
+    .step-body {
+      font-size: 12px;
+      color: #374151;
+    }
+    .step-field {
+      margin-top: 2px;
+    }
+    .step-label {
+      color: #6b7280;
+      margin-right: 4px;
+    }
+    .step-repair {
+      margin-left: 6px;
+      font-size: 11px;
+      color: #b45309;
+    }
+    .result-header {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .result-header-success {
+      color: #16a34a;
+    }
+    .result-header-failed {
+      color: #dc2626;
+    }
+    .badge {
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+      font-size: 11px;
+    }
+    .result-body {
+      white-space: pre-wrap;
+      font-size: 13px;
+      color: #111827;
+    }
+    .result-error {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #b91c1c;
+      white-space: pre-wrap;
+    }
+    .history-list {
+      margin-top: 8px;
+      border-top: 1px solid #e5e7eb;
+      padding-top: 6px;
+      font-size: 12px;
+      color: #4b5563;
+      max-height: 120px;
+      overflow: auto;
+    }
+    .history-item {
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <header>Agent 可视化 Demo</header>
+  <div class="layout">
+    <section class="panel">
+      <div class="panel-header">任务输入</div>
+      <div class="panel-body">
+        <textarea id="task-input" placeholder="请输入任务描述，例如：总结当前仓库的目录结构并生成一段说明。"></textarea>
+        <button id="run-btn">执行任务</button>
+        <div class="status-bar">
+          <div>
+            <span class="status-dot status-idle" id="status-dot"></span>
+            <span id="status-text">空闲</span>
+          </div>
+          <div id="last-duration"></div>
+        </div>
+        <div class="hint">
+          提示：点击“执行任务”后，中间区域会按 step 展示执行过程，右侧显示最终结果。
+        </div>
+        <div class="history-list" id="history-list"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">执行过程</div>
+      <div class="panel-body">
+        <div id="steps-list" class="steps-list"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">最终结果</div>
+      <div class="panel-body">
+        <div id="result-header" class="result-header"></div>
+        <div id="result-body" class="result-body"></div>
+        <div id="result-error" class="result-error"></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const inputEl = document.getElementById("task-input");
+    const runBtn = document.getElementById("run-btn");
+    const statusDot = document.getElementById("status-dot");
+    const statusText = document.getElementById("status-text");
+    const lastDuration = document.getElementById("last-duration");
+    const stepsList = document.getElementById("steps-list");
+    const resultHeader = document.getElementById("result-header");
+    const resultBody = document.getElementById("result-body");
+    const resultError = document.getElementById("result-error");
+    const historyList = document.getElementById("history-list");
+
+    let historyItems = [];
+
+    function setRunning(isRunning) {
+      if (isRunning) {
+        statusDot.classList.remove("status-idle");
+        statusDot.classList.add("status-running");
+        statusText.textContent = "执行中…";
+        runBtn.disabled = true;
+      } else {
+        statusDot.classList.remove("status-running");
+        statusDot.classList.add("status-idle");
+        statusText.textContent = "空闲";
+        runBtn.disabled = false;
+      }
+    }
+
+    function clearView() {
+      stepsList.innerHTML = "";
+      resultHeader.textContent = "";
+      resultHeader.className = "result-header";
+      resultBody.textContent = "";
+      resultError.textContent = "";
+    }
+
+    function appendHistoryItem(text) {
+      const now = new Date();
+      const time = now.toTimeString().slice(0, 8);
+      historyItems.unshift("[" + time + "] " + text);
+      if (historyItems.length > 20) {
+        historyItems = historyItems.slice(0, 20);
+      }
+      historyList.innerHTML = "";
+      historyItems.forEach(function (t) {
+        const div = document.createElement("div");
+        div.className = "history-item";
+        div.textContent = t;
+        historyList.appendChild(div);
+      });
+    }
+
+    function renderStepsSlowly(steps) {
+      stepsList.innerHTML = "";
+      let index = 0;
+      function renderNext() {
+        if (index >= steps.length) {
+          return;
+        }
+        const s = steps[index++];
+        const card = document.createElement("div");
+        card.className = "step-card";
+
+        const header = document.createElement("div");
+        header.className = "step-header";
+
+        const title = document.createElement("div");
+        title.className = "step-title";
+        title.textContent = s.step_id || ("Step " + index);
+        header.appendChild(title);
+
+        const statusSpan = document.createElement("span");
+        statusSpan.className = "step-status";
+        const st = (s.status || "").toLowerCase();
+        if (st === "success") {
+          statusSpan.classList.add("step-status-success");
+          statusSpan.textContent = "成功";
+        } else if (st === "failed") {
+          statusSpan.classList.add("step-status-failed");
+          statusSpan.textContent = "失败";
+        } else {
+          statusSpan.classList.add("step-status-other");
+          statusSpan.textContent = s.status || "未知";
+        }
+        header.appendChild(statusSpan);
+
+        if (s.repaired) {
+          const repairSpan = document.createElement("span");
+          repairSpan.className = "step-repair";
+          repairSpan.textContent = "已触发 repair";
+          header.appendChild(repairSpan);
+        }
+
+        card.appendChild(header);
+
+        const body = document.createElement("div");
+        body.className = "step-body";
+
+        if (s.tool) {
+          const f = document.createElement("div");
+          f.className = "step-field";
+          const label = document.createElement("span");
+          label.className = "step-label";
+          label.textContent = "工具:";
+          const value = document.createElement("span");
+          value.textContent = s.tool;
+          f.appendChild(label);
+          f.appendChild(value);
+          body.appendChild(f);
+        }
+
+        if (s.error_type) {
+          const f = document.createElement("div");
+          f.className = "step-field";
+          const label = document.createElement("span");
+          label.className = "step-label";
+          label.textContent = "错误类型:";
+          const value = document.createElement("span");
+          value.textContent = s.error_type;
+          f.appendChild(label);
+          f.appendChild(value);
+          body.appendChild(f);
+        }
+
+        if (s.error) {
+          const f = document.createElement("div");
+          f.className = "step-field";
+          const label = document.createElement("span");
+          label.className = "step-label";
+          label.textContent = "错误信息:";
+          const value = document.createElement("span");
+          value.textContent = s.error;
+          f.appendChild(label);
+          f.appendChild(value);
+          body.appendChild(f);
+        }
+
+        card.appendChild(body);
+        stepsList.appendChild(card);
+
+        setTimeout(renderNext, 500);
+      }
+      renderNext();
+    }
+
+    async function runTask() {
+      const text = inputEl.value.trim();
+      if (!text) {
+        inputEl.focus();
+        return;
+      }
+      clearView();
+      setRunning(true);
+      lastDuration.textContent = "";
+      const started = Date.now();
+      try {
+        const resp = await fetch("/api/invoke", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: text })
+        });
+        const data = await resp.json();
+        const duration = ((Date.now() - started) / 1000).toFixed(1) + "s";
+        lastDuration.textContent = duration;
+
+        const status = (data.status || "").toLowerCase();
+        resultHeader.innerHTML = "";
+        resultHeader.className = "result-header";
+
+        const titleSpan = document.createElement("span");
+        titleSpan.textContent = "最终状态:";
+        resultHeader.appendChild(titleSpan);
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        if (status === "completed") {
+          resultHeader.classList.add("result-header-success");
+          badge.textContent = "成功";
+        } else if (status === "failed" || status === "system_error") {
+          resultHeader.classList.add("result-header-failed");
+          badge.textContent = "失败";
+        } else {
+          badge.textContent = data.status || "未知";
+        }
+        resultHeader.appendChild(badge);
+
+        resultBody.textContent = data.response || "";
+        resultError.textContent = data.error || "";
+
+        renderStepsSlowly(data.steps || []);
+        appendHistoryItem((status === "completed" ? "成功" : "结束") + " · " + text);
+      } catch (e) {
+        lastDuration.textContent = "";
+        resultHeader.className = "result-header result-header-failed";
+        resultHeader.textContent = "请求失败";
+        resultError.textContent = String(e);
+      } finally {
+        setRunning(false);
+      }
+    }
+
+    runBtn.addEventListener("click", runTask);
+    inputEl.addEventListener("keydown", function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        runTask();
+      }
+    });
+  </script>
+</body>
+</html>
+

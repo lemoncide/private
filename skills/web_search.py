@@ -3,8 +3,12 @@ from typing import List, Dict
 
 def local_web_search(query: str) -> str:
     """
-    Simulated local web search for testing/demo purposes.
-    Returns mocked structured data for specific queries.
+    本地模拟“网页搜索”（离线测试用），返回 mock 结果 JSON。
+
+    何时用：需要在无外网/无 API 的情况下演示“搜索→提取→总结”的链路。
+    输入：query（查询词）。
+    输出：JSON 字符串（str），包含若干条 {title/snippet/url}。
+    典型任务：离线 demo、测试 planner 是否会正确调用搜索工具、验证结果整合流程。
     """
     query_lower = query.lower()
     

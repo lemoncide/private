@@ -1,5 +1,6 @@
 from typing import Dict, Any, List
 from agent.core.state import AgentState
+from agent.core.errors import PlanToolNotFoundError
 from agent.core.planner import Planner
 from agent.core.executor import ToolExecutor, ExecutionContext
 from agent.core.repair import Repairer
@@ -28,15 +29,32 @@ class AgentNodes:
         """
         logger.info("--- Plan Node ---")
         objective = state.input
+        attempt_limits = [12, 25, 500]
+        last_error: str | None = None
 
-        tool_defs, report = prepare_tool_defs_with_report(self.tools, objective)
-        logger.info(f"Filtered tools from {report.get('total')} to {report.get('filtered')}")
-        logger.info(f"Active Tools: {[t.get('name') for t in tool_defs]}")
+        plan = None
+        for i, limit in enumerate(attempt_limits):
+            tool_defs, report = prepare_tool_defs_with_report(self.tools, objective, limit=limit)
+            logger.info(f"Filtered tools from {report.get('total')} to {report.get('filtered')} (limit={report.get('limit')})")
+            logger.info(f"Active Tools: {[t.get('name') for t in tool_defs]}")
+            if report.get("retrieved", 0) <= 0 and i < len(attempt_limits) - 1:
+                last_error = "Tool retrieval returned empty; expanding tool set"
+                continue
+            try:
+                plan = self.planner.create_plan(objective, tool_defs)
+                last_error = None
+                break
+            except PlanToolNotFoundError as e:
+                last_error = str(e)
+                if i < len(attempt_limits) - 1:
+                    continue
+                break
+            except Exception as e:
+                last_error = str(e)
+                break
 
-        try:
-            plan = self.planner.create_plan(objective, tool_defs)
-        except Exception as e:
-            return {"status": "failed", "error": f"Planning error: {str(e)}"}
+        if plan is None:
+            return {"status": "failed", "error": f"Planning error: {last_error}"}
 
         initial_context = {"input": objective}
         return {
@@ -45,6 +63,9 @@ class AgentNodes:
             "status": "executing",
             "context_variables": initial_context,
             "error": None,
+            "error_type": None,
+            "repair_context": {},
+            "repair_history": [],
             "repair_attempts": 0,
         }
 
@@ -99,6 +120,8 @@ class AgentNodes:
                 "current_step_index": next_index,
                 "status": status,
                 "error": None,
+                "error_type": None,
+                "repair_context": {},
                 "repair_attempts": 0,
             }
         else:
@@ -109,12 +132,38 @@ class AgentNodes:
                 "context_variables": context.variables,
                 "status": "failed",
                 "error": result.error,
+                "error_type": getattr(result, "error_type", None),
+                "repair_context": result.meta or {},
                 "repair_attempts": state.repair_attempts,
             }
 
-    def repair_node(self, state: AgentState) -> Dict[str, Any]:
-        logger.info("--- Repair Node ---")
+    def error_router_node(self, state: AgentState) -> Dict[str, Any]:
+        return {}
 
+    def retry_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("--- Retry Node ---")
+        index = state.current_step_index
+        step_id = None
+        if state.plan and state.plan.steps and index < len(state.plan.steps):
+            step_id = state.plan.steps[index].step_id
+        history = list(state.repair_history or [])
+        history.append(
+            {
+                "step_id": step_id,
+                "error_type": state.error_type,
+                "attempted_fix": "retry",
+                "result": "scheduled",
+            }
+        )
+        return {
+            "repair_history": history,
+            "repair_attempts": state.repair_attempts + 1,
+            "status": "running",
+            "error": None,
+        }
+
+    def repair_plan_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("--- Repair Plan Node ---")
         if not state.plan or not state.plan.steps:
             return {
                 "context_variables": state.context_variables,
@@ -137,8 +186,8 @@ class AgentNodes:
         if not last_error and state.past_steps:
             last_error = state.past_steps[-1].error
 
-        tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input)
-        patched = self.repairer.repair_step(
+        tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input, limit=500)
+        patched = self.repairer.repair_plan(
             objective=state.input,
             failed_step=failed_step,
             error=last_error or "",
@@ -146,13 +195,23 @@ class AgentNodes:
             tool_defs=tool_defs,
         )
 
+        history = list(state.repair_history or [])
         attempts = state.repair_attempts + 1
         if not patched:
+            history.append(
+                {
+                    "step_id": failed_step.step_id,
+                    "error_type": state.error_type,
+                    "attempted_fix": "repair_plan",
+                    "result": "failed",
+                }
+            )
             return {
                 "context_variables": state.context_variables,
                 "status": "repair_failed",
-                "error": "Repair failed",
+                "error": "Repair plan failed",
                 "repair_attempts": attempts,
+                "repair_history": history,
             }
 
         new_step = failed_step.model_copy(
@@ -164,19 +223,233 @@ class AgentNodes:
         new_steps = list(state.plan.steps)
         new_steps[index] = new_step
         new_plan = state.plan.model_copy(update={"steps": new_steps})
-
+        history.append(
+            {
+                "step_id": failed_step.step_id,
+                "error_type": state.error_type,
+                "attempted_fix": "repair_plan",
+                "result": "applied",
+            }
+        )
         return {
             "plan": new_plan,
             "context_variables": state.context_variables,
-            "status": "executing",
+            "status": "running",
             "error": None,
+            "error_type": None,
+            "repair_context": {},
             "repair_attempts": attempts,
+            "repair_history": history,
+            "current_step_index": index,
+        }
+
+    def repair_params_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("--- Repair Params Node ---")
+        if not state.plan or not state.plan.steps:
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "No plan available",
+                "repair_attempts": state.repair_attempts + 1,
+            }
+
+        index = state.current_step_index
+        if index >= len(state.plan.steps):
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "Invalid step index",
+                "repair_attempts": state.repair_attempts + 1,
+            }
+
+        failed_step: PlanStep = state.plan.steps[index]
+        last_error = state.error
+        if not last_error and state.past_steps:
+            last_error = state.past_steps[-1].error
+
+        tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input, limit=25)
+        args_schema = (state.repair_context or {}).get("args_schema")
+        actual_args = (state.repair_context or {}).get("resolved_args")
+        patched = self.repairer.repair_params(
+            objective=state.input,
+            failed_step=failed_step,
+            error=last_error or "",
+            context_variables=state.context_variables,
+            tool_defs=tool_defs,
+            args_schema=args_schema,
+            actual_args=actual_args,
+        )
+
+        history = list(state.repair_history or [])
+        attempts = state.repair_attempts + 1
+        if not patched:
+            history.append(
+                {
+                    "step_id": failed_step.step_id,
+                    "error_type": state.error_type,
+                    "attempted_fix": "repair_params",
+                    "result": "failed",
+                }
+            )
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "Repair params failed",
+                "repair_attempts": attempts,
+                "repair_history": history,
+            }
+
+        new_step = failed_step.model_copy(
+            update={
+                "required_capability": patched.get("required_capability"),
+                "tool_args": patched.get("tool_args") or {},
+            }
+        )
+        new_steps = list(state.plan.steps)
+        new_steps[index] = new_step
+        new_plan = state.plan.model_copy(update={"steps": new_steps})
+        history.append(
+            {
+                "step_id": failed_step.step_id,
+                "error_type": state.error_type,
+                "attempted_fix": "repair_params",
+                "result": "applied",
+            }
+        )
+        return {
+            "plan": new_plan,
+            "context_variables": state.context_variables,
+            "status": "running",
+            "error": None,
+            "error_type": None,
+            "repair_context": {},
+            "repair_attempts": attempts,
+            "repair_history": history,
+            "current_step_index": index,
+        }
+
+    def repair_query_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("--- Repair Query Node ---")
+        if not state.plan or not state.plan.steps:
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "No plan available",
+                "repair_attempts": state.repair_attempts + 1,
+            }
+
+        index = state.current_step_index
+        if index >= len(state.plan.steps):
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "Invalid step index",
+                "repair_attempts": state.repair_attempts + 1,
+            }
+
+        failed_step: PlanStep = state.plan.steps[index]
+        last_error = state.error
+        if not last_error and state.past_steps:
+            last_error = state.past_steps[-1].error
+
+        tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input, limit=25)
+        actual_args = (state.repair_context or {}).get("resolved_args")
+        patched = self.repairer.repair_query(
+            objective=state.input,
+            failed_step=failed_step,
+            error=last_error or "",
+            context_variables=state.context_variables,
+            tool_defs=tool_defs,
+            actual_args=actual_args,
+        )
+
+        history = list(state.repair_history or [])
+        attempts = state.repair_attempts + 1
+        if not patched:
+            history.append(
+                {
+                    "step_id": failed_step.step_id,
+                    "error_type": state.error_type,
+                    "attempted_fix": "repair_query",
+                    "result": "failed",
+                }
+            )
+            return {
+                "context_variables": state.context_variables,
+                "status": "repair_failed",
+                "error": "Repair query failed",
+                "repair_attempts": attempts,
+                "repair_history": history,
+            }
+
+        new_step = failed_step.model_copy(
+            update={
+                "required_capability": patched.get("required_capability"),
+                "tool_args": patched.get("tool_args") or {},
+            }
+        )
+        new_steps = list(state.plan.steps)
+        new_steps[index] = new_step
+        new_plan = state.plan.model_copy(update={"steps": new_steps})
+        history.append(
+            {
+                "step_id": failed_step.step_id,
+                "error_type": state.error_type,
+                "attempted_fix": "repair_query",
+                "result": "applied",
+            }
+        )
+        return {
+            "plan": new_plan,
+            "context_variables": state.context_variables,
+            "status": "running",
+            "error": None,
+            "error_type": None,
+            "repair_context": {},
+            "repair_attempts": attempts,
+            "repair_history": history,
             "current_step_index": index,
         }
 
     def reflect_node(self, state: AgentState) -> Dict[str, Any]:
-        """
-        Reflect Node: Formats the final response.
-        """
         logger.info("--- Reflect Node ---")
-        return {"response": self.reflector.reflect(state)}
+        text = self.reflector.reflect(state)
+        try:
+            objective = state.input or ""
+            status = state.status or ""
+            error = state.error or ""
+            tools: List[str] = []
+            for r in state.past_steps or []:
+                meta = getattr(r, "meta", {}) or {}
+                name = meta.get("tool")
+                if name:
+                    tools.append(name)
+            tools_line = ", ".join(tools) if tools else ""
+            result_preview = None
+            final = None
+            try:
+                from agent.core.reflect import Reflector
+                final = Reflector._extract_final_result(state)
+                result_preview = Reflector._prompt_preview(final, limit=1000)
+            except Exception:
+                result_preview = None
+            parts: List[str] = []
+            parts.append(f"Objective: {objective}")
+            parts.append(f"Status: {status}")
+            if tools_line:
+                parts.append(f"Tools: {tools_line}")
+            if error:
+                parts.append(f"Error: {error}")
+            if result_preview:
+                parts.append(f"Result: {result_preview}")
+            summary = "\n".join(parts)
+            self.memory.add_task_history(
+                summary=summary,
+                metadata={
+                    "status": status,
+                    "tools": tools,
+                },
+            )
+        except Exception:
+            pass
+        return {"response": text}

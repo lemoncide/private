@@ -23,7 +23,11 @@ class MemoryManager:
         self.tool_collection = self.chroma_client.get_or_create_collection(
             name="agent_tools",
             embedding_function=self.embedding_fn
-        ) # New collection for tools
+        )
+        self.task_collection = self.chroma_client.get_or_create_collection(
+            name="agent_task_history",
+            embedding_function=self.embedding_fn
+        )
         
         # Simple Key-Value Store (mocking Redis)
         self.kv_store: Dict[str, Any] = {}
@@ -85,6 +89,24 @@ class MemoryManager:
     def retrieve_relevant(self, query: str, limit: int = 5) -> List[str]:
         """Retrieve relevant memories from Vector DB"""
         results = self.collection.query(
+            query_texts=[query],
+            n_results=limit
+        )
+        if results['documents']:
+            return results['documents'][0]
+        return []
+
+    def add_task_history(self, summary: str, metadata: Dict[str, Any] = None):
+        metadata = metadata or {}
+        doc_id = str(len(self.task_collection.get()['ids']) + 1)
+        self.task_collection.add(
+            documents=[summary],
+            metadatas=[metadata],
+            ids=[doc_id]
+        )
+
+    def retrieve_task_history(self, query: str, limit: int = 5) -> List[str]:
+        results = self.task_collection.query(
             query_texts=[query],
             n_results=limit
         )

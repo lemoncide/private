@@ -16,3 +16,5 @@ notebook
 mcp
 pytest
 pytest-cov
+fastapi
+uvicorn

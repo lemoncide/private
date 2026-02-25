@@ -18,6 +18,12 @@ class AgentState(BaseModel):
     context_variables: Dict[str, Any] = Field(default_factory=dict, description="Shared execution context variables (replacing raw ExecutionContext)")
     
     repair_attempts: int = Field(default=0, description="Number of repair attempts for the current step")
+
+    error_type: Optional[str] = Field(default=None, description="Categorized error type for routing/repair")
+
+    repair_context: Dict[str, Any] = Field(default_factory=dict, description="Context used by repair nodes (tool name, args, schema, etc.)")
+
+    repair_history: List[Dict[str, Any]] = Field(default_factory=list, description="History of repair attempts to prevent loops")
     
     response: Optional[str] = Field(default=None, description="Final response to the user")
     

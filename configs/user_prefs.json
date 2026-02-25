@@ -1,0 +1,9 @@
+{
+  "preferred_language": "zh",
+  "output_style": "concise",
+  "common_repos": [],
+  "path_conventions": {
+    "sandbox_root": ".",
+    "outputs_dir": "outputs"
+  }
+}

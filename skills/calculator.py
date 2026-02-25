@@ -4,8 +4,12 @@ import math
 
 def calculator(expression: str) -> float:
     """
-    Safely evaluate a mathematical expression.
-    Supports basic arithmetic: +, -, *, /, **, %, and math functions like sin, cos, sqrt.
+    安全地计算一个数学表达式。
+
+    何时用：需要进行确定性的数值计算（优先于让 LLM 口算）。
+    输入：expression（表达式字符串；支持 + - * / ** % 及 sin/cos/sqrt 等函数）。
+    输出：计算结果（float）。
+    典型任务：单位换算、简单统计计算、阈值判断前的数值求解。
     """
     # Safe operators whitelist
     operators = {

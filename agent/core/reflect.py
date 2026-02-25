@@ -21,6 +21,18 @@ class Reflector:
         return text
 
     @staticmethod
+    def _prompt_preview(value: Any, limit: int = 12000) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            text = str(value)
+        except Exception:
+            return None
+        if len(text) > limit:
+            return text[:limit] + "...(内容已截断)"
+        return text
+
+    @staticmethod
     def _extract_final_result(state: AgentState) -> Any:
         if not state.plan:
             return None
@@ -53,7 +65,7 @@ class Reflector:
                 except Exception:
                     result_preview = None
             if isinstance(result_preview, str) and len(result_preview) > 1200:
-                result_preview = result_preview[:1200] + "..."
+                result_preview = result_preview[:1200] + "...(内容已截断)"
             summary.append(
                 {
                     "step_id": step_dict.get("step_id"),
@@ -123,12 +135,13 @@ class Reflector:
             "- 用中文输出\n"
         )
 
+        final_result_for_prompt = self._prompt_preview(final_result, limit=12000)
         user_prompt = (
             f"objective:\n{objective}\n\n"
             f"status: {status}\n"
             f"error: {error}\n\n"
             f"steps:\n{steps}\n\n"
-            f"final_result:\n{final_result}\n"
+            f"final_result:\n{final_result_for_prompt}\n"
         )
 
         text = self.llm.generate(user_prompt, system_prompt=system_prompt) or ""

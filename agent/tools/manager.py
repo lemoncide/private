@@ -6,6 +6,7 @@ from agent.utils.logger import logger
 import os
 
 from agent.memory.manager import MemoryManager
+from agent.core.errors import ToolNotFoundError
 
 try:
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -21,6 +22,106 @@ class ToolManager:
         self._mcp_tools_initialized = False
         self._mcp_client = None
         self._initialize_tools()
+
+    @staticmethod
+    def _augment_tool_description(name: str, description: str) -> str:
+        base = (description or "").strip()
+        usage: List[str] = []
+        io: List[str] = []
+        tips: List[str] = []
+        avoid: List[str] = []
+        tasks: List[str] = []
+        lower = (name or "").lower()
+
+        if lower.startswith("mcp:official_github:"):
+            if lower.endswith(":get_file_contents"):
+                usage.append("读取仓库文件内容；或把 path 设为目录来列出目录下的条目")
+                io.append("输入 owner/repo/path；输出文件内容或目录条目列表")
+                tips.append("path 为空字符串或 / 可列根目录；path 为目录时返回目录条目")
+                tasks.extend(["读 README", "列根目录文件", "遍历目录结构", "抓取配置文件"])
+            elif lower.endswith(":list_issues") or lower.endswith(":search_issues"):
+                usage.append("获取/筛选 issues 或 PR 列表，或按条件搜索")
+                io.append("输入 owner/repo 与过滤条件；输出条目列表")
+                tasks.extend(["汇总 open issues", "查找特定关键字相关问题"])
+            elif lower.endswith(":search_code"):
+                usage.append("跨仓库/仓库内做代码关键词搜索（不是目录/文件列表工具）")
+                io.append("输入 q（GitHub 搜索语法）；输出匹配结果列表")
+                avoid.append("不要用它来列目录，列目录请用 get_file_contents 并传目录 path")
+                tasks.extend(["定位函数定义/用法", "排查配置项来源", "查找包含特定字符串的文件"])
+            elif lower.endswith(":list_pull_requests"):
+                usage.append("列出/筛选仓库的 Pull Requests")
+                io.append("输入 owner/repo 与过滤条件；输出 PR 列表")
+                tasks.extend(["汇总 open PR", "按分支/状态筛选 PR"])
+            elif lower.endswith(":get_pull_request_files"):
+                usage.append("获取某个 PR 改动的文件列表")
+                io.append("输入 owner/repo/pull_number；输出文件改动列表")
+                tasks.extend(["审查改动范围", "统计改动文件类型"])
+            elif lower.endswith(":get_pull_request_comments"):
+                usage.append("获取某个 PR 的评论")
+                io.append("输入 owner/repo/pull_number；输出评论列表")
+                tasks.extend(["汇总讨论点", "发现阻塞问题"])
+            elif lower.endswith(":get_pull_request_reviews"):
+                usage.append("获取某个 PR 的 Review 状态与记录")
+                io.append("输入 owner/repo/pull_number；输出 Review 列表")
+                tasks.extend(["检查审批状态", "统计 Review 意见"])
+            elif lower.endswith(":create_or_update_file") or lower.endswith(":push_files"):
+                usage.append("在仓库中创建/更新文件或批量推送文件")
+                io.append("输入 owner/repo/path/content/message 等；输出结果/提交信息")
+                avoid.append("非读取/列目录工具，若要列目录请用 get_file_contents")
+                tasks.extend(["提交生成的报告", "更新配置文件", "批量写入产物"])
+
+        if lower.startswith("mcp:official_filesystem:"):
+            if lower.endswith(":read_text_file") or lower.endswith(":read_file"):
+                usage.append("读取本地文件内容（只限允许目录内）")
+                io.append("输入 path；输出文件文本")
+                tasks.extend(["读取源码/配置", "读取生成的输出文件"])
+            elif lower.endswith(":list_directory"):
+                usage.append("列出某个目录下的文件/子目录")
+                io.append("输入 path；输出目录条目列表")
+                tasks.extend(["找文件位置", "确认目录结构"])
+            elif lower.endswith(":write_file"):
+                usage.append("在本地文件系统写入或覆盖文件（只限允许目录内）")
+                io.append("输入 path/content；输出写入结果")
+                tasks.extend(["生成报告", "导出处理结果", "写入配置"])
+            elif lower.endswith(":search_files"):
+                usage.append("按 glob 模式递归搜索文件路径")
+                io.append("输入 path/pattern；输出匹配路径列表")
+                tasks.extend(["查找某类文件", "定位配置/脚本位置"])
+            elif lower.endswith(":directory_tree"):
+                usage.append("以树形结构返回目录的递归视图")
+                io.append("输入 path；输出目录树 JSON（包含 name/type/children）")
+                tasks.extend(["整仓走查", "生成目录结构报告"])
+            elif lower.endswith(":move_file"):
+                usage.append("移动或重命名文件/目录")
+                io.append("输入 source/destination；输出移动结果")
+                tasks.extend(["重命名文件", "整理目录结构"])
+            elif lower.endswith(":create_directory"):
+                usage.append("创建目录或确保目录存在")
+                io.append("输入 path；输出创建结果")
+                tasks.extend(["初始化项目结构", "准备输出路径"])
+            elif lower.endswith(":edit_file"):
+                usage.append("按行编辑文本文件并返回 diff")
+                io.append("输入 path/edits/dryRun；输出 git 风格 diff")
+                tasks.extend(["批量替换内容", "预览修改差异"])
+
+        sections: List[str] = []
+        if usage:
+            sections.append("何时用：" + "；".join(usage))
+        if io:
+            sections.append("输入输出：" + "；".join(io))
+        if tips:
+            sections.append("用法提示：" + "；".join(tips))
+        if avoid:
+            sections.append("避免误用：" + "；".join(avoid))
+        if tasks:
+            sections.append("典型任务：" + "；".join(tasks))
+
+        if not sections:
+            return base
+        structured = "\n".join(sections).strip()
+        if not base:
+            return structured
+        return (base + "\n\n" + structured).strip()
 
     def _initialize_tools(self):
         # 1. Load Skills with Auto-Mapping
@@ -87,7 +188,7 @@ class ToolManager:
     def register_tool(self, tool: BaseTool):
         self.tools[tool.name] = tool
         if self.memory_manager:
-            self.memory_manager.index_tool(tool.name, tool.description)
+            self.memory_manager.index_tool(tool.name, self._augment_tool_description(tool.name, tool.description))
         logger.debug(f"Registered tool: {tool.name}")
 
     def get_tool(self, name: str) -> Optional[BaseTool]:
@@ -132,4 +233,4 @@ class ToolManager:
                 # or if the tool implementation is confused.
                 # Just raise the original error to let Executor/Adaptation handle it.
                 raise e
-        return f"Tool {name} not found."
+        raise ToolNotFoundError(name)
