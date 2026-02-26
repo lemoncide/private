@@ -37,17 +37,31 @@ class LLMClient:
 
         try:
             logger.debug(f"LLM Request: {messages}")
-            completion = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=0.7
-            )
+            completion = self.chat(messages, temperature=0.7)
             response = completion.choices[0].message.content
             logger.debug(f"LLM Response: {response[:100]}...")
             return response
         except Exception as e:
             logger.error(f"LLM Generation failed: {e}")
             return f"Error generating response: {e}"
+
+    def chat(
+        self, 
+        messages: List[Dict[str, Any]], 
+        temperature: float = 0.7, 
+        response_format: Optional[Dict[str, Any]] = None, 
+        timeout: Optional[float] = None
+    ) -> Any:
+        """
+        Direct chat completion call using the underlying OpenAI client.
+        """
+        return self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=temperature,
+            response_format=response_format,
+            timeout=timeout,
+        )
 
     def generate_with_tools(
         self,
@@ -212,18 +226,3 @@ Do not output any markdown formatting like ```json or ```. Just the raw JSON obj
                 current_prompt = prompt + f"\n\nError: Previous output was not valid JSON. \nOutput: {response}\nError: {str(e)}\nPlease correct it."
                 
         raise ValueError("Failed to generate valid JSON after retries.")
-
-    def chat(self, messages: List[Dict[str, str]]) -> str:
-        """
-        Chat completion interface.
-        """
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=0.7
-            )
-            return completion.choices[0].message.content
-        except Exception as e:
-            logger.error(f"LLM Chat failed: {e}")
-            return f"Error in chat: {e}"

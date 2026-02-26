@@ -1,4 +1,5 @@
 import os
+import uuid
 from typing import List, Dict, Any, Optional
 import chromadb
 from chromadb.config import Settings
@@ -76,7 +77,7 @@ class MemoryManager:
     def add_memory(self, content: str, metadata: Dict[str, Any] = None):
         """Add long-term memory to Vector DB"""
         metadata = metadata or {}
-        doc_id = str(len(self.collection.get()['ids']) + 1)
+        doc_id = uuid.uuid4().hex
         
         # In a real app, we would use embeddings model to embed the content
         # Chroma handles default embedding if none provided, but here we just pass content
@@ -98,7 +99,7 @@ class MemoryManager:
 
     def add_task_history(self, summary: str, metadata: Dict[str, Any] = None):
         metadata = metadata or {}
-        doc_id = str(len(self.task_collection.get()['ids']) + 1)
+        doc_id = uuid.uuid4().hex
         self.task_collection.add(
             documents=[summary],
             metadatas=[metadata],

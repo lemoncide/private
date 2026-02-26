@@ -68,12 +68,12 @@ class Reflector:
                 result_preview = result_preview[:1200] + "...(内容已截断)"
             summary.append(
                 {
-                    "step_id": step_dict.get("step_id"),
-                    "status": step_dict.get("status"),
+                    "step_id": getattr(r, "step_id", None) or step_dict.get("step_id"),
+                    "status": getattr(r, "status", None) or step_dict.get("status"),
                     "tool": meta.get("tool"),
                     "tool_args": meta.get("args") if meta.get("args") is not None else meta.get("tool_args"),
-                    "error_type": step_dict.get("error_type"),
-                    "error": step_dict.get("error"),
+                    "error_type": getattr(r, "error_type", None) or step_dict.get("error_type"),
+                    "error": getattr(r, "error", None) or step_dict.get("error"),
                     "result_preview": result_preview,
                 }
             )

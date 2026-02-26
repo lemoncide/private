@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any, List
 from agent.core.state import AgentState
 from agent.core.errors import PlanToolNotFoundError
@@ -23,7 +24,7 @@ class AgentNodes:
         self.repairer = Repairer(llm_client)
         self.reflector = Reflector(llm_client)
 
-    def plan_node(self, state: AgentState) -> Dict[str, Any]:
+    async def plan_node(self, state: AgentState) -> Dict[str, Any]:
         """
         Planner Node: Generates an execution plan based on the user's objective.
         """
@@ -33,6 +34,7 @@ class AgentNodes:
         last_error: str | None = None
 
         plan = None
+        loop = asyncio.get_running_loop()
         for i, limit in enumerate(attempt_limits):
             tool_defs, report = prepare_tool_defs_with_report(self.tools, objective, limit=limit)
             logger.info(f"Filtered tools from {report.get('total')} to {report.get('filtered')} (limit={report.get('limit')})")
@@ -41,7 +43,8 @@ class AgentNodes:
                 last_error = "Tool retrieval returned empty; expanding tool set"
                 continue
             try:
-                plan = self.planner.create_plan(objective, tool_defs)
+                # self.planner.create_plan is synchronous, run it in an executor
+                plan = await loop.run_in_executor(None, self.planner.create_plan, objective, tool_defs)
                 last_error = None
                 break
             except PlanToolNotFoundError as e:
@@ -162,7 +165,7 @@ class AgentNodes:
             "error": None,
         }
 
-    def repair_plan_node(self, state: AgentState) -> Dict[str, Any]:
+    async def repair_plan_node(self, state: AgentState) -> Dict[str, Any]:
         logger.info("--- Repair Plan Node ---")
         if not state.plan or not state.plan.steps:
             return {
@@ -187,12 +190,17 @@ class AgentNodes:
             last_error = state.past_steps[-1].error
 
         tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input, limit=500)
-        patched = self.repairer.repair_plan(
-            objective=state.input,
-            failed_step=failed_step,
-            error=last_error or "",
-            context_variables=state.context_variables,
-            tool_defs=tool_defs,
+        
+        # Run synchronous repairer method in executor
+        loop = asyncio.get_running_loop()
+        patched = await loop.run_in_executor(
+            None, 
+            self.repairer.repair_plan,
+            state.input,
+            failed_step,
+            last_error or "",
+            state.context_variables,
+            tool_defs
         )
 
         history = list(state.repair_history or [])
@@ -243,7 +251,7 @@ class AgentNodes:
             "current_step_index": index,
         }
 
-    def repair_params_node(self, state: AgentState) -> Dict[str, Any]:
+    async def repair_params_node(self, state: AgentState) -> Dict[str, Any]:
         logger.info("--- Repair Params Node ---")
         if not state.plan or not state.plan.steps:
             return {
@@ -270,14 +278,19 @@ class AgentNodes:
         tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input, limit=25)
         args_schema = (state.repair_context or {}).get("args_schema")
         actual_args = (state.repair_context or {}).get("resolved_args")
-        patched = self.repairer.repair_params(
-            objective=state.input,
-            failed_step=failed_step,
-            error=last_error or "",
-            context_variables=state.context_variables,
-            tool_defs=tool_defs,
-            args_schema=args_schema,
-            actual_args=actual_args,
+        
+        # Run synchronous repairer method in executor
+        loop = asyncio.get_running_loop()
+        patched = await loop.run_in_executor(
+            None,
+            self.repairer.repair_params,
+            state.input,
+            failed_step,
+            last_error or "",
+            state.context_variables,
+            tool_defs,
+            args_schema,
+            actual_args
         )
 
         history = list(state.repair_history or [])
@@ -328,7 +341,7 @@ class AgentNodes:
             "current_step_index": index,
         }
 
-    def repair_query_node(self, state: AgentState) -> Dict[str, Any]:
+    async def repair_query_node(self, state: AgentState) -> Dict[str, Any]:
         logger.info("--- Repair Query Node ---")
         if not state.plan or not state.plan.steps:
             return {
@@ -354,13 +367,18 @@ class AgentNodes:
 
         tool_defs, _ = prepare_tool_defs_with_report(self.tools, state.input, limit=25)
         actual_args = (state.repair_context or {}).get("resolved_args")
-        patched = self.repairer.repair_query(
-            objective=state.input,
-            failed_step=failed_step,
-            error=last_error or "",
-            context_variables=state.context_variables,
-            tool_defs=tool_defs,
-            actual_args=actual_args,
+        
+        # Run synchronous repairer method in executor
+        loop = asyncio.get_running_loop()
+        patched = await loop.run_in_executor(
+            None,
+            self.repairer.repair_query,
+            state.input,
+            failed_step,
+            last_error or "",
+            state.context_variables,
+            tool_defs,
+            actual_args
         )
 
         history = list(state.repair_history or [])
@@ -411,9 +429,13 @@ class AgentNodes:
             "current_step_index": index,
         }
 
-    def reflect_node(self, state: AgentState) -> Dict[str, Any]:
+    async def reflect_node(self, state: AgentState) -> Dict[str, Any]:
         logger.info("--- Reflect Node ---")
-        text = self.reflector.reflect(state)
+        
+        # self.reflector.reflect is synchronous, run it in an executor
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, self.reflector.reflect, state)
+        
         try:
             objective = state.input or ""
             status = state.status or ""

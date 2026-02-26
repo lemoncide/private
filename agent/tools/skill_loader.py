@@ -38,11 +38,15 @@ class SkillLoader:
                     # 2. Auto-scan for functions
                     else:
                         for name, obj in inspect.getmembers(module):
-                            if inspect.isfunction(obj) and obj.__module__ == module_name:
-                                # Skip private functions
-                                if name.startswith("_"):
+                            if inspect.isfunction(obj):
+                                # Skip private functions and those without docstrings
+                                if name.startswith("_") or not obj.__doc__:
                                     continue
                                     
+                                # Only load functions defined in this module
+                                if obj.__module__ != module_name and not obj.__module__.endswith('.' + module_name):
+                                    continue
+
                                 # Convert function to Tool
                                 tool = self._create_tool_from_func(obj)
                                 tools.append(tool)
@@ -113,13 +117,29 @@ class SkillLoader:
         ArgsSchema = create_model(f"{tool_name}Args", **fields)
         
         # Create dynamic tool class
-        # Use a factory function to capture closure variables correctly
+        is_async = inspect.iscoroutinefunction(func)
+
         class DynamicTool(BaseTool):
             name: str = tool_name
             description: str = tool_description
             args_schema: type[BaseModel] = ArgsSchema
             
             def _run(self, **kwargs):
+                if is_async:
+                    # Fallback for sync execution of async function
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    return loop.run_until_complete(func(**kwargs))
                 return func(**kwargs)
+
+            async def _arun(self, **kwargs):
+                if is_async:
+                    return await func(**kwargs)
+                # Run sync function in executor
+                return await super()._arun(**kwargs)
                 
         return DynamicTool()

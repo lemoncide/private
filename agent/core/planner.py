@@ -3,8 +3,6 @@ from typing import Any, Dict, List, Optional
 import os
 import json
 
-from openai import OpenAI
-
 from agent.core.errors import PlanToolNotFoundError
 from agent.core.schema import Plan, PlanStep
 from agent.core.validator import PlanValidator
@@ -17,10 +15,6 @@ logger = logging.getLogger("Agent")
 
 class Planner:
     def __init__(self, llm_client: Optional[LLMClient] = None):
-        api_key = config.get("llm.api_key", "lm-studio")
-        base_url = normalize_base_url(config.get("llm.api_base", "http://127.0.0.1:1234/v1"))
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
-        self.model = config.get("llm.model", "gpt-3.5-turbo")
         self.llm = llm_client or LLMClient()
         self.validator = PlanValidator()
 
@@ -102,13 +96,65 @@ class Planner:
 {tool_list}
 
 规则：
-- Plan 里只包含需要调用外部工具的步骤（读文件、搜索、写文件等）
-- 纯推理、总结、解释类的步骤不要放进 Plan，这些由系统自动处理
-- required_capability 必须是上方工具列表中的完整工具名
-- tool_args 中引用上一步结果用 "$上一步的output_var"，引用用户输入用 "$input"
-- final_output 必须等于最后一步的 output_var
-- 文件路径约束：当调用 read_file / write_file 时，path 必须使用 sandbox 内的相对路径（例如 "github_summary.txt" 或 "outputs/readme.md"），禁止使用绝对路径（例如 "E:\\tmp\\a.txt"）
+【核心规则】
+1. 每个步骤必须调用一个具体工具，required_capability 必须是上方工具列表中的完整工具名
+2. 步骤之间的数据传递：用 "$上一步的output_var" 引用上一步结果，用 "$input" 引用用户原始输入
+3. 数据必须显式传递：如果某步骤需要用到前一步的结果，tool_args 里必须用 "$变量名" 明确引用，禁止跳过
+4. final_output 必须等于最后一步的 output_var
+5. 文件路径只能使用 sandbox 内的相对路径（如 "report.txt"），禁止绝对路径
+6. write_file 的 mode 参数只能是 "write" 或 "append"，不能用 "w" 或 "a"
 
+【哪些步骤放进 Plan】
+- 需要调用外部工具的步骤必须放进来：读文件、写文件、搜索、获取数据、调用 API 等
+- 需要基于真实数据进行分析、总结、生成报告的步骤，必须使用 llm_reasoning 工具，并把数据通过 "$变量名" 传入 task_description
+- 不要省略中间步骤，数据获取和数据分析是两个独立步骤
+
+【llm_reasoning 使用规范】
+- 当需要分析数据、生成报告、总结内容时，使用 llm_reasoning 工具
+- task_description 必须包含实际数据引用，例如：
+  "根据以下文件列表分析项目结构：$file_list_output，请生成项目概览报告"
+- 禁止在 task_description 里只写任务描述而不引用任何数据变量
+
+【示例计划】
+目标：获取 GitHub 仓库根目录文件列表，分析项目结构，生成报告写入文件
+
+正确示例：
+{{
+  "goal": "分析 GitHub 仓库结构并生成报告",
+  "steps": [
+    {{
+      "step_id": "step_1",
+      "intent": "获取仓库根目录文件列表",
+      "required_capability": "mcp:official_github:get_file_contents",
+      "tool_args": {{"owner": "lemoncide", "repo": "agent", "path": ""}},
+      "output_var": "file_list",
+      "depends_on": [],
+      "fallback_strategy": "fail"
+    }},
+    {{
+      "step_id": "step_2",
+      "intent": "基于文件列表分析项目结构并生成报告",
+      "required_capability": "llm_reasoning",
+      "tool_args": {{
+        "task_description": "根据以下仓库文件列表：$file_list，分析该项目的结构、当前实现、未来目标及优缺点，生成一份完整的项目概览报告"
+      }},
+      "output_var": "report",
+      "depends_on": ["step_1"],
+      "fallback_strategy": "fail"
+    }},
+    {{
+      "step_id": "step_3",
+      "intent": "将报告写入文件",
+      "required_capability": "write_file",
+      "tool_args": {{"path": "project_overview.txt", "content": "$report", "mode": "write"}},
+      "output_var": "write_result",
+      "depends_on": ["step_2"],
+      "fallback_strategy": "fail"
+    }}
+  ],
+  "final_output": "write_result",
+  "metadata": {{}}
+}}
 {prefs_text}
 
 严格按照以下 JSON 格式输出，不要输出任何额外文字：
@@ -141,8 +187,7 @@ class Planner:
                 "请修正计划，required_capability 必须严格从可用工具列表中选择，不能编造不存在的工具名。"
             )
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = self.llm.chat(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},

@@ -113,6 +113,8 @@ class ToolExecutor:
     async def execute_step(self, step: PlanStep, context: ExecutionContext) -> ExecutionResult:
         logger.info(f"Executing Step {step.step_id}: {step.intent}")
 
+        tool_obj = None
+        resolved_args = None
         try:
             tool_obj = self.tool_manager.get_tool(step.required_capability)
             if tool_obj is None:
@@ -156,7 +158,7 @@ class ToolExecutor:
                 stage = "args_resolve"
             args_schema = None
             try:
-                args_schema = getattr(tool_obj, "args_schema", None) if "tool_obj" in locals() else None
+                args_schema = getattr(tool_obj, "args_schema", None) if tool_obj is not None else None
             except Exception:
                 args_schema = None
             return ExecutionResult(
@@ -167,7 +169,7 @@ class ToolExecutor:
                 meta={
                     "tool": step.required_capability,
                     "tool_args": step.tool_args,
-                    "resolved_args": locals().get("resolved_args"),
+                    "resolved_args": resolved_args,
                     "args_schema": args_schema.schema() if hasattr(args_schema, "schema") else args_schema.model_json_schema() if hasattr(args_schema, "model_json_schema") else args_schema,
                     "stage": stage,
                 },

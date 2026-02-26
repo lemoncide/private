@@ -168,6 +168,16 @@ class ToolManager:
         self._mcp_tools_initialized = True
         logger.info(f"MCP tools loaded: {len(tools)}")
 
+    async def aclose(self):
+        """Close the MCP client connections."""
+        if self._mcp_client and hasattr(self._mcp_client, "aclose"):
+            try:
+                await self._mcp_client.aclose()
+                logger.info("MCP client connections closed.")
+            except Exception as e:
+                logger.error(f"Error closing MCP client: {e}")
+        self._mcp_tools_initialized = False
+
     def get_mcp_connections(self) -> Dict[str, Dict[str, Any]]:
         connections: Dict[str, Dict[str, Any]] = {}
         mcp_servers = config.get("mcp.servers", {}) or {}
