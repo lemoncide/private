@@ -25,18 +25,13 @@ def _prepare_tool_defs(tool_manager: ToolManager, objective: str, limit: int = 1
 
     retrieved_names: List[str] = []
     if objective and retrieval_k > 0:
-        mm = getattr(tool_manager, "memory_manager", None)
-        if mm:
-            try:
-                retrieved_names = mm.retrieve_tools(objective, limit=retrieval_k) or []
-            except Exception:
-                retrieved_names = []
-        if not retrieved_names:
-            try:
-                retrieved_names = [t.get("name") for t in tool_manager.list_tools(query=objective, limit=retrieval_k) if t.get("name")]
-            except Exception:
-                retrieved_names = []
-        logger.info(f"Semantic retrieved tools: {retrieved_names}")
+        try:
+            # Use tool_manager.list_tools which now has post-filtering logic
+            retrieved_tools = tool_manager.list_tools(query=objective, limit=retrieval_k)
+            retrieved_names = [t.get("name") for t in retrieved_tools if t.get("name")]
+        except Exception:
+            retrieved_names = []
+    logger.info(f"Semantic retrieved tools: {retrieved_names}")
 
 
 

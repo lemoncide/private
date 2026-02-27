@@ -1,5 +1,7 @@
+import os
 from typing import Any, Dict, List
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -31,6 +33,11 @@ app.add_middleware(
 )
 
 agent = LangGraphAgent()
+
+# Get the directory of the current file to build absolute paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+INDEX_PATH = os.path.join(STATIC_DIR, "index.html")
 
 
 @app.post("/api/invoke", response_model=InvokeResponse)
@@ -76,8 +83,13 @@ async def invoke(req: InvokeRequest) -> InvokeResponse:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse("agent/web/static/index.html")
+    return FileResponse(INDEX_PATH)
 
 
-app.mount("/static", StaticFiles(directory="agent/web/static"), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+if __name__ == "__main__":
+    print("正在启动 Agent Web 服务，正在加载知识库和 LLM，请稍候...")
+    uvicorn.run(app, host="127.0.0.1", port=8001)
 

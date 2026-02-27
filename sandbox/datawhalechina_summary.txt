@@ -1,0 +1,19 @@
+根据搜索结果，datawhalechina仓库的主要内容包括以下几个方面：
+
+1. **机器学习和深度学习相关教程和代码**： 
+   - 《机器学习》（西瓜书）公式详解（pumpkin-book）
+   - 强化学习中文教程（easy-rl）
+   - pandas中文教程（joyful-pandas）
+
+2. **大模型相关教程和代码**：
+   - 面向开发者的 LLM 入门教程，吴恩达大模型系列课程中文版（llm-cookbook）
+   - 大模型应用开发教程（llm-universe）
+   - 大模型基础: 一文了解大模型基础知识（so-large-lm）
+   - 从0构建大语言模型（llms-from-scratch-cn）
+
+3. **其他数据科学和人工智能相关教程和代码**：
+   - 数据挖掘、计算机视觉、自然语言处理、推荐系统竞赛知识、代码、思路（competition-baseline）
+   - 每日面试题（daily-interview）
+   - 《大模型白盒子构建指南》：一个全手搓的Tiny-Universe（tiny-universe）
+
+这些仓库涵盖了机器学习、深度学习、大模型、竞赛等方面的内容，为学习和研究提供了丰富的资源。

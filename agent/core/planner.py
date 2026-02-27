@@ -115,6 +115,12 @@ class Planner:
   "根据以下文件列表分析项目结构：$file_list_output，请生成项目概览报告"
 - 禁止在 task_description 里只写任务描述而不引用任何数据变量
 
+【工具使用补充说明】
+- 只有当用户在目标中明确提到“使用本地知识库”、“本地RAG”、“本地检索”等关键词时，才允许调用 rag_search。严禁在用户未明确提及这些关键词时自动猜测或启用本地检索。
+- mcp:fetch:fetch：用于抓取指定 URL 的网页内容，返回原始文本可能较长且包含噪音，抓取后必须增加一个 llm_reasoning 步骤对内容进行清洗提炼，不能直接把原始结果传给 write_file
+- mcp:official_github:get_file_contents：获取仓库文件或目录列表，path 传空字符串可列出根目录
+- write_file 的 mode 只能是 "write" 或 "append"，不能用 "w" 或 "a"
+
 【示例计划】
 目标：获取 GitHub 仓库根目录文件列表，分析项目结构，生成报告写入文件
 

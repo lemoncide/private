@@ -19,3 +19,9 @@ mcp:
         - "@modelcontextprotocol/server-github"
       env:
         GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}" # Injected from env var
+
+    fetch:
+      command: "python"
+      args:
+        - "-m"
+        - "mcp_server_fetch"

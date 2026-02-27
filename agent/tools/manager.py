@@ -206,14 +206,28 @@ class ToolManager:
 
     def list_tools(self, query: str = None, limit: int = 5) -> List[Dict[str, str]]:
         # Modified to support retrieval
+        rag_keywords = ["本地知识库", "本地rag", "本地检索", "知识库", "rag"]
+        has_rag_keyword = any(k in (query or "").lower() for k in rag_keywords) if query else False
+
         if query and self.memory_manager:
             relevant_names = self.memory_manager.retrieve_tools(query, limit)
+            
+            # Post-filter: only allow rag_search if query has explicit keywords
+            if "rag_search" in relevant_names and not has_rag_keyword:
+                relevant_names = [n for n in relevant_names if n != "rag_search"]
+
             tools_to_return = [self.tools[name] for name in relevant_names if name in self.tools]
             # Fallback if no relevant tools found or memory not ready
             if not tools_to_return:
-                 tools_to_return = list(self.tools.values())[:limit]
+                 all_tools = list(self.tools.values())
+                 if not has_rag_keyword:
+                     all_tools = [t for t in all_tools if getattr(t, "name", "") != "rag_search"]
+                 tools_to_return = all_tools[:limit]
         else:
-            tools_to_return = list(self.tools.values())
+            all_tools = list(self.tools.values())
+            if not has_rag_keyword:
+                all_tools = [t for t in all_tools if getattr(t, "name", "") != "rag_search"]
+            tools_to_return = all_tools[:limit] if query else all_tools
 
         result = []
         for t in tools_to_return:
