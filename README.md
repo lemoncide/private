@@ -82,15 +82,15 @@ python -m agent.web.app
 
 ### 1. 知识库检索与任务执行
 Agent 能够根据指令自动判断是否启用本地 RAG 组件进行知识检索，并基于检索内容进行推理。
-![RAG 场景演示]()
+![RAG 场景演示](https://github.com/user-attachments/assets/4dffdfea-44c9-4353-80ed-90e9f2b0a959)
 
 ### 2. 多步任务与结果保存
-Agent 能够读取仓库 README，进行深度分析总结，并将改善建议自动保存到本地 Sandbox。
-![多步任务演示]()
+Agent 能够读取仓库 README，进行分析总结，并将改善建议自动保存到本地 Sandbox。
+![多步任务演示](https://github.com/user-attachments/assets/e0ea80e1-4c29-42ff-9d21-ff38ee36c711)
 
 ### 3. 自动修复机制
 当工具调用出现参数错误或 API 异常时，Agent 会自动触发 Repair 流程，修正计划并继续执行。
-![自动修复演示]()
+![自动修复演示](https://github.com/user-attachments/assets/b36041bf-395b-4635-8984-070b36665ab8)
 
 ## 🧠 关键逻辑说明
 
